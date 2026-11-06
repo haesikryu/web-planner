@@ -3,6 +3,8 @@
 상태: 검토 초안
 작성일: 2026-11-06
 
+**[전체 진행 현황과 현재 위치](PROGRESS.md)**
+
 가치와 목표에 기반한 계획, 빠른 일상 기록, 주간 회고를 결합한 개인용 웹 플래너를 개발한다. 첫 개발 단위는 과제를 입력하고 오늘 화면에서 완료하는 흐름이다.
 
 ## 관리 위치
@@ -21,6 +23,11 @@
 - `docs/process.md`: 명세부터 운영까지의 진행 기준.
 - `specs/001-capture-complete/spec.md`: 첫 기능 명세 초안.
 - `specs/001-capture-complete/acceptance.feature`: 첫 기능 수용 시나리오 초안.
+- `docs/decisions/ADR-001-google-authentication.md`: Google 단일 로그인 결정과 세션 설계.
+- `docs/domain/rules.md`: 제목·날짜·상태·중복 요청의 공통 규칙.
+- `specs/001-capture-complete/plan.md`: 첫 기능 설계와 검증 전략.
+- `contracts/openapi.json`: 제품 데이터 API 계약 초안.
+- `specs/001-capture-complete/tasks.md`: 개발 작업과 선행 조건.
 
 ## 다음 실행 순서
 

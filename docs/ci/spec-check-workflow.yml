@@ -1,0 +1,18 @@
+# Template only. Activate in .github/workflows after the implementation environment is selected.
+name: Specification checks
+on:
+  push:
+    branches: [main, docs/project-foundation]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  specification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check contract and traceability structure
+        run: python scripts/check_specs.py
