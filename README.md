@@ -1,2 +1,39 @@
-# web-planner
-A spec-driven personal web planner combining value-based planning, rapid logging, and reflection.
+# Web Planner
+
+상태: 검토 초안
+작성일: 2026-11-06
+
+**[전체 진행 현황과 현재 위치](PROGRESS.md)**
+
+가치와 목표에 기반한 계획, 빠른 일상 기록, 주간 회고를 결합한 개인용 웹 플래너를 개발한다. 첫 개발 단위는 과제를 입력하고 오늘 화면에서 완료하는 흐름이다.
+
+## 관리 위치
+
+| 대상 | 기준 위치 | 상태 |
+|---|---|---|
+| 코드·승인된 명세·설계·테스트 | haesikryu/web-planner 공개 저장소 | 명세 초안 검토 |
+| 요구 접수·우선순위·승인·담당자 | 비공개 Google Drive 관리표 | 기존 요구사항 관리표 사용 |
+| 검토 자료·디자인·릴리스 증적 | Google Drive 프로젝트 폴더 | 프로젝트 자료 구조 준비 |
+
+현재는 명세와 개발 절차의 검토 초안이며 제품 코드나 실행 가능한 애플리케이션을 포함하지 않는다. 문서가 승인된 것으로 간주하지 않는다. 비공개 자료의 접근 정보는 공개 저장소에 게시하지 않는다.
+
+## 시작 문서
+
+- `docs/principles.md`: 구현이 따라야 할 공통 원칙.
+- `docs/process.md`: 명세부터 운영까지의 진행 기준.
+- `specs/001-capture-complete/spec.md`: 첫 기능 명세 초안.
+- `specs/001-capture-complete/acceptance.feature`: 첫 기능 수용 시나리오 초안.
+- `docs/decisions/ADR-001-google-authentication.md`: Google 단일 로그인 결정과 세션 설계.
+- `docs/domain/rules.md`: 제목·날짜·상태·중복 요청의 공통 규칙.
+- `specs/001-capture-complete/plan.md`: 첫 기능 설계와 검증 전략.
+- `contracts/openapi.json`: 제품 데이터 API 계약 초안.
+- `specs/001-capture-complete/tasks.md`: 개발 작업과 선행 조건.
+
+## 다음 실행 순서
+
+1. 개발 원칙과 첫 기능 명세 검토.
+2. 인증 방식 D-02 및 과제 상태 규칙의 미결정 사항 해결.
+3. 첫 기능의 UX·데이터·API 계약 작성.
+4. 작업과 테스트를 분해한 뒤 구현 시작.
+
+명세·코드·검수는 ID로 연결하고, 제품 동작 설명의 기준은 승인된 저장소 명세로 둔다. 구글 시트에는 링크와 기준 버전을 연결한다. 실제 사용자 일기·개인 데이터·인증 비밀은 GitHub에 넣지 않는다. 테스트에는 합성 데이터를 사용한다.
