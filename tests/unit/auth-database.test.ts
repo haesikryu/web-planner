@@ -221,6 +221,11 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
       const blocked = await perform("other-google-sub-same-email", "alice@example.test");
       expect(blocked.completed.headers.get("location")).toBe(`${config.baseUrl}/?auth=error`);
       expect(await db.select().from(schema.user)).toHaveLength(2);
+      const outside = await perform("google-sub-outsider", "outsider@example.test");
+      expect(outside.completed.headers.get("location")).toBe(`${config.baseUrl}/?auth=error`);
+      expect(outside.completed.headers.getSetCookie().some(item => item.startsWith("__Host-planner-session=") && !item.includes("Max-Age=0"))).toBe(false);
+      expect(await db.select().from(schema.user)).toHaveLength(2);
+      expect(await db.select().from(schema.session)).toHaveLength(1);
       const created = await perform("google-sub-new-person", "new-person@example.test");
       expect(created.completed.headers.getSetCookie().some(item => item.startsWith("__Host-planner-session="))).toBe(true);
       const users = await db.select().from(schema.user);
