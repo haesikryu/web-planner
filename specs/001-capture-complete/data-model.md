@@ -34,6 +34,6 @@ tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instan
 
 ## 보관과 운영
 
-실행 기준은 `src/server/db/schema.ts`와 `migrations/0000_auth_and_task_foundation.sql`이다. users의 timezone·settings_version은 UTC·1로 시작한다. identities의 라이브러리 호환 필드는 공급자 토큰·비밀번호 저장을 CHECK로 차단한다. verifications에는 10분 OAuth state·PKCE 정보를 저장하고 라이브러리가 일회 소비한다. 만료 레코드 정리의 운영 주기는 T-011에서 정한다. 시간대 검증·제목 Unicode 공백 정규화는 T-005에서 완성한다.
+실행 기준은 `src/server/db/schema.ts`와 migrations의 두 SQL이다. users는 검증된 기기 시간대·설정 버전 1로 생성하며 제안이 없으면 UTC다. identities는 공급자 토큰·비밀번호 저장을 CHECK로 차단한다. verifications의 10분 state·PKCE는 라이브러리가 일회 소비한다. T-005의 Unicode 제목·시간대 규칙을 API와 화면에서 공유한다. 두 번째 마이그레이션은 과제당 현재 유효 완료 활동 하나와 양수 설정 버전을 강제한다. db:prune으로 만료 기록을 제한된 묶음으로 정리하며 운영 주기는 T-011에서 정한다.
 
 전체 사용자 삭제·휴지통 정책은 FEAT-001의 실행 범위 밖이지만 이후 도입을 막지 않도록 owner 경계를 유지한다. 운영 데이터 내보내기·삭제와 백업 보관 기간은 별도 명세에서 연결한다. 개인정보 본문·제목·토큰·키 응답을 일반 로그에 기록하지 않는다. idempotency 응답 저장소도 개인 데이터이므로 접근 제어와 TTL 정리를 적용한다.

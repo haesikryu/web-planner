@@ -36,6 +36,7 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
   const [editing, setEditing] = useState<{ task: Task; title: string; date: string } | null>(null);
   const currentOwner = useRef(initialSession.userId), operation = useRef(false), loadSequence = useRef(0);
   const calendar = useRef(`${initialSession.timezone}|${initialSession.serverDate}`);
+  const statusEpoch = useRef(0);
 
   const verifySession = useCallback(async (): Promise<PlannerSession> => {
     const response = await fetch("/api/session", { cache: "no-store" });
@@ -62,7 +63,9 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
     if (sequence === loadSequence.current && currentOwner.current) setPages(Object.fromEntries(values) as Record<View, Page>);
   }, [verifySession]);
   useEffect(() => {
-    reload().then(() => setMessage("서버에 저장된 목록입니다.")).catch(cause => setError(cause.message));
+    const epoch = statusEpoch.current;
+    reload().then(() => { if (epoch === statusEpoch.current) setMessage("서버에 저장된 목록입니다."); })
+      .catch(cause => { if (epoch === statusEpoch.current) setError(cause.message); });
     const refresh = () => { if (!document.hidden && !operation.current) reload().catch(cause => setError(cause.message)); };
     window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", refresh);
     const timer = window.setInterval(refresh, 60000);
@@ -77,7 +80,8 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
   async function send(value: Pending) {
     if (operation.current || value.ownerId !== currentOwner.current) return;
     if (Date.now() - value.startedAt >= 86400000) { setError("24시간이 지난 요청은 자동 재전송하지 않습니다. 목록에서 저장 여부를 확인해주세요."); return; }
-    operation.current = true; setBusy(true); setError(""); setMessage("저장 중입니다."); setPending(value);
+    operation.current = true; statusEpoch.current++; setBusy(true); setError(""); setMessage("저장 중입니다."); setPending(value);
+    let serverConfirmed = false;
     try {
       const fresh = await verifySession();
       const response = await fetch(value.path, { method: value.method, headers: { "Content-Type": "application/json", "X-CSRF-Token": fresh.csrfToken,
@@ -85,20 +89,21 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
       if (response.status === 412 && value.path.startsWith("/api/tasks/")) {
         const latest = await fetch(value.path, { cache: "no-store" });
         await verifySession();
-        if (latest.ok) { setConflict(await latest.json()); setError("다른 곳에서 변경한 내용이 있습니다. 최신 내용과 내 변경을 확인해주세요."); return; }
+        if (latest.ok) { setConflict(await latest.json()); setMessage("수정 충돌 확인 필요"); setError("다른 곳에서 변경한 내용이 있습니다. 최신 내용과 내 변경을 확인해주세요."); return; }
       }
       if (!response.ok) {
         if ([400, 404, 422, 428].includes(response.status)) { setPending(null); throw new Error("입력이나 항목을 확인해주세요. 저장하지 못했습니다."); }
         if (response.status === 412 && value.path === "/api/settings") { setPending(null); await verifySession(); throw new Error("설정이 다른 곳에서 변경되었습니다. 최신 설정을 확인한 후 다시 적용해주세요."); }
         throw new Error("저장 여부를 확인할 수 없습니다. 같은 요청으로 재시도하거나 목록을 확인해주세요.");
       }
+      serverConfirmed = true;
       const confirmed = await verifySession();
       if (value.path === "/api/settings") setZone(confirmed.timezone);
       setPending(null); setConflict(null);
       if (value.method === "POST") setDraft("");
       setEditing(null); setMessage("저장 완료");
       await reload();
-    } catch (cause) { setError(cause instanceof Error && !(cause instanceof TypeError) ? cause.message : "저장 여부를 확인할 수 없습니다. 입력을 보존했습니다. 같은 요청으로 다시 시도해주세요."); }
+    } catch (cause) { setMessage(serverConfirmed ? "저장 완료 · 목록을 다시 확인해주세요." : "저장 확인 필요"); setError(cause instanceof Error && !(cause instanceof TypeError) ? cause.message : "저장 여부를 확인할 수 없습니다. 입력을 보존했습니다. 같은 요청으로 다시 시도해주세요."); }
     finally { operation.current = false; setBusy(false); }
   }
   function mutate(path: string, method: Pending["method"], body: object, version?: number) {
@@ -129,12 +134,14 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
     finally { operation.current = false; setBusy(false); }
   }
   const disabled = busy || Boolean(pending) || locked;
+  let draftError = "";
+  if (draft) { try { normalizeTitle(draft); } catch { draftError = "제목은 공백만 사용할 수 없으며 줄바꿈 없이 1~200자로 입력해주세요."; } }
   return <main id="main" className="planner">
     <div className="planner-heading"><div><p className="eyebrow">ONE THING AT A TIME</p><h1>오늘을 가볍게.</h1><p className="date-line">{session.serverDate} · {session.timezone}</p></div>
       <button className="quiet-button" type="button" disabled={busy} onClick={() => void signOut()}>로그아웃 / 계정 바꾸기</button></div>
     <form className="capture" onSubmit={event => { event.preventDefault(); try { mutate("/api/tasks", "POST", { title: normalizeTitle(draft) }); } catch { setError("제목은 줄바꿈 없이 1~200자로 입력해주세요."); } }}>
-      <label htmlFor="capture-title">지금 떠오른 일</label><div className="capture-row"><input id="capture-title" value={draft} disabled={disabled} onChange={event => setDraft(event.target.value)} placeholder="제목 하나면 충분해요" autoComplete="off" />
-        <button type="submit" disabled={disabled || !draft.trim()}>입력함에 저장</button></div><p className="field-note">목표와 날짜는 나중에 정해도 괜찮아요.</p></form>
+      <label htmlFor="capture-title">지금 떠오른 일</label><div className="capture-row"><input id="capture-title" value={draft} disabled={disabled} aria-invalid={Boolean(draftError)} aria-describedby={draftError ? "capture-error" : "capture-help"} onChange={event => setDraft(event.target.value)} placeholder="제목 하나면 충분해요" autoComplete="off" />
+        <button type="submit" disabled={disabled || !draft.trim() || Boolean(draftError)}>입력함에 저장</button></div><p id="capture-help" className="field-note">목표와 날짜는 나중에 정해도 괜찮아요.</p>{draftError && <p id="capture-error" role="alert" className="error-note">{draftError}</p>}</form>
     <div className="planner-notice"><p role="status" aria-live="polite">{message}</p><button type="button" className="quiet-button" disabled={busy} onClick={() => void reload().then(() => { setMessage("최신 목록을 확인했습니다."); setError(""); }).catch(cause => setError(cause.message))}>목록 새로고침</button></div>
     {error && <p role="alert" className="error-note">{error}</p>}
     {pending && !conflict && <div className="recovery"><p>입력과 저장 요청을 이 화면에 보관하고 있습니다.</p><button type="button" disabled={busy || locked} onClick={() => void send(pending)}>같은 요청 재시도</button><button type="button" disabled={busy} onClick={() => { if (window.confirm("목록에서 저장 여부를 확인했나요? 확인을 마치면 이전 요청을 닫습니다.")) { setPending(null); setMessage("이전 요청을 닫았습니다. 목록과 입력을 확인해주세요."); } }}>목록 확인 후 요청 닫기</button></div>}

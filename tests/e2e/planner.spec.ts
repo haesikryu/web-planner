@@ -20,6 +20,9 @@ test.beforeEach(async ({ context }) => seedSession(context));
 test("capture -> today -> complete -> undo keeps the same original task", async ({ page }, testInfo) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "오늘을 가볍게." })).toBeVisible();
+  await page.getByLabel("지금 떠오른 일").fill("  ");
+  await expect(page.getByText("제목은 공백만 사용할 수 없으며", { exact: false })).toBeVisible();
+  await expect(page.getByRole("button", { name: "입력함에 저장" })).toBeDisabled();
   await page.getByLabel("지금 떠오른 일").fill("오늘의 제안서");
   await page.getByRole("button", { name: "입력함에 저장" }).click();
   const inbox = page.getByRole("region", { name: "입력함", exact: true });
@@ -59,6 +62,7 @@ test("an uncertain creation older than 24 hours is not sent again", async ({ pag
   await page.goto("/"); await page.getByLabel("지금 떠오른 일").fill("오래된 불확실 요청");
   await page.getByRole("button", { name: "입력함에 저장" }).click();
   await expect(page.getByRole("main").getByRole("alert")).toContainText("확인");
+  await expect(page.getByRole("status")).toHaveText("저장 확인 필요");
   await page.clock.setFixedTime(new Date(Date.now() + 86401000));
   await page.getByRole("button", { name: "같은 요청 재시도" }).click();
   await expect(page.getByRole("main").getByRole("alert")).toContainText("24시간");
