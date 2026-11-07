@@ -16,6 +16,8 @@ type Props = {
 const blank = (date: string): Draft => ({ entry: { date, slots: [], version: 0, updatedAt: null }, slots: [], loaded: false, loading: false, error: "", message: "일정을 불러오는 중입니다." });
 
 const minutes = Array.from({ length: (SCHEDULE_END - SCHEDULE_START) / SCHEDULE_STEP }, (_, index) => SCHEDULE_START + index * SCHEDULE_STEP);
+const slotsPerPage = 4;
+const schedulePages = Array.from({ length: minutes.length / slotsPerPage }, (_, index) => index);
 const clockTime = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
 const sameSlots = (first: ScheduleSlot[], second: ScheduleSlot[]) => first.length === second.length && first.every((slot, index) => slot.startMinute === second[index].startMinute && slot.title === second[index].title);
 
@@ -23,6 +25,7 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [busy, setBusy] = useState(false), [pending, setPending] = useState<Pending | null>(null);
   const [conflict, setConflict] = useState<ScheduleEntry | null>(null);
+  const [timePage, setTimePage] = useState(0);
   const draftsRef = useRef(drafts), ownerRef = useRef(ownerId), sequences = useRef<Record<string, number>>({});
   const cacheOwner = useRef(ownerId), operation = useRef(false);
   draftsRef.current = drafts; ownerRef.current = ownerId;
@@ -58,6 +61,7 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
     setDrafts({}); setPending(null); setConflict(null); setBusy(false);
   }, [ownerId]);
   useEffect(() => {
+    setTimePage(0);
     if (!ownerId) return;
     const cached = draftsRef.current[date];
     if (cached?.loaded && !sameSlots(cached.slots, cached.entry.slots)) return;
@@ -116,13 +120,22 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
   const inputDisabled = disabled || busy || Boolean(pending) || !page.loaded || page.loading || !ownerId;
   return <section className="schedule-section" id="diary-schedule" aria-label="하루 일정">
     <div className="section-heading"><h2>하루 일정</h2><span className="schedule-range">06:00 — 24:00</span></div>
-    <p id="schedule-help" className="field-note">30분마다 한 칸, 하루의 흐름을 채워보세요. 아래로 스크롤하면 밤 일정까지 볼 수 있어요.</p>
+    <p id="schedule-help" className="field-note">30분마다 한 칸, 시간대를 바꾸어 하루 일정을 확인하세요.</p>
+    <div className="schedule-pagination">
+      <button type="button" aria-label="이전 시간대" disabled={timePage === 0} onClick={() => setTimePage(value => value - 1)}>‹</button>
+      <label className="sr-only" htmlFor="schedule-time-page">일정 시간대</label>
+      <select id="schedule-time-page" value={timePage} onChange={event => setTimePage(Number(event.target.value))}>
+        {schedulePages.map(index => <option key={index} value={index}>{clockTime(SCHEDULE_START + index * slotsPerPage * SCHEDULE_STEP)}–{clockTime(SCHEDULE_START + (index + 1) * slotsPerPage * SCHEDULE_STEP)}</option>)}
+      </select>
+      <span className="schedule-page-count">{timePage + 1} / {schedulePages.length}</span>
+      <button type="button" aria-label="다음 시간대" disabled={timePage === schedulePages.length - 1} onClick={() => setTimePage(value => value + 1)}>›</button>
+    </div>
     <form onSubmit={event => {
       event.preventDefault(); if (inputDisabled || !dirty || validation) return;
       void send({ owner: ownerId, date, slots: normalized, version: page.entry.version, key: crypto.randomUUID(), startedAt: Date.now() });
     }}>
       <fieldset className="schedule-grid" aria-label="30분 단위 일정표" aria-describedby="schedule-help">
-        {minutes.map(minute => <div className={`schedule-row${minute % 60 ? " half-hour" : ""}`} key={minute}>
+        {minutes.slice(timePage * slotsPerPage, (timePage + 1) * slotsPerPage).map(minute => <div className={`schedule-row${minute % 60 ? " half-hour" : ""}`} key={minute}>
           <label htmlFor={`schedule-${minute}`}><span>{clockTime(minute)}</span><span className="schedule-until">–{clockTime(minute + SCHEDULE_STEP)}</span></label>
           <input id={`schedule-${minute}`} aria-label={`${clockTime(minute)} 일정`} value={page.slots.find(slot => slot.startMinute === minute)?.title ?? ""}
             disabled={inputDisabled} autoComplete="off" placeholder="일정 입력" onChange={event => {
@@ -132,10 +145,9 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
               update(date, { slots, error: "", message: "저장하지 않은 일정이 있습니다." });
             }} />
         </div>)}
-        <div className="schedule-end">24:00 <span className="schedule-end-caption">하루의 끝</span></div>
       </fieldset>
       <div className="schedule-actions"><span className="schedule-count">{normalized.length} / 36칸</span><button type="submit" disabled={inputDisabled || !dirty || Boolean(validation)}>일정 저장</button></div>
-      <p className="field-note">작성 후 일정 저장을 눌러주세요. 내용을 지우고 저장하면 해당 일정이 삭제돼요.{demo ? " 이 탭에 임시 저장됩니다." : ""}</p>
+      <p className="field-note">모든 시간대의 변경을 함께 저장해요.{demo ? " 이 탭에 임시 저장됩니다." : ""}</p>
     </form>
     <p className="schedule-save-status" aria-live="polite">{page.message}</p>
     {validation && <p role="alert" className="error-note">{validation}</p>}

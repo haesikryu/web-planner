@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Web Planner FEAT-001 API",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "description": "FEAT-001 실행 계약. 인증·설정·날짜별 최대 5개 할 일과 줄 순서 우선순위·30분 일정·자유글 API를 제공한다. 실제 공급자·배포 상태는 별도 검증 기록을 따른다."
   },
   "security": [
@@ -398,7 +398,7 @@
       "patch": {
         "operationId": "patchTask",
         "summary": "제목·실행일·정리 상태·완료 변경",
-        "description": "상태 open/completed/deferred/canceled와 우선순위 high/medium/low, 유형 task/appointment/event를 변경한다. completed에서 어떤 다른 상태로 이동해도 완료 시각과 이전 유효 완료 활동을 무효화한다. 미룸은 상태 표시만 바꾸며 날짜 이동은 scheduledDate를 명시한다. 속성 생략은 유지, scheduledDate=null은 날짜 해제. 날짜 변경은 마감일에 영향 없음. 동일 값 변경은 새 버전·활동 없음. 같은 키 재생은 버전 검사 전 처리하며 사용자 소유권은 먼저 확인한다. 변경 결과가 날짜 없는 비완료 항목이면 입력함 접근을 유지하도록 isUnprocessed=true를 보충한다. 이 조건에서 명시적인 isUnprocessed=false는 422이며, 서버 보충값은 원래 요청의 재생 해시에 포함하지 않는다. 다른 실행일로 이동할 때 목적 날짜의 완료·취소 포함 전체 과제가 5개 이상이면 422 DAILY_TASK_LIMIT이다. 기존 5개 초과 자료는 보존하며 같은 실행일의 제목·상태·우선순위 수정은 허용한다. 생성과 날짜 이동은 목적 날짜별 잠금으로 직렬화한다. move up/down 단독 요청은 현재 실행일의 인접 항목과 dailyOrder를 원자적으로 교환한다. 완료·취소도 이동 대상이며 두 항목의 버전과 updatedAt을 증가시키고 order_changed 활동을 각각 기록한다. 응답은 요청한 원본이다. 맨 위 up/맨 아래 down은 no-op, 실행일 없음 또는 다른 필드 동반은 422다. 날짜 이동은 목적 날짜 max+1로 붙이고 남은 항목의 순서와 gap을 유지한다. 날짜 해제는 dailyOrder=null이다. 같은 날짜의 제목·상태·priority 변경은 순서를 유지한다. 모든 날짜 잠금을 오름차순으로 먼저 잡은 뒤 행을 잠그고 버전을 다시 확인하여 생성·이동·순서 변경을 직렬화한다.",
+        "description": "상태 open/completed/deferred/canceled와 우선순위 high/medium/low, 유형 task/appointment/event를 변경한다. completed에서 어떤 다른 상태로 이동해도 완료 시각과 이전 유효 완료 활동을 무효화한다. 미룸은 상태 표시만 바꾸며 날짜 이동은 scheduledDate를 명시한다. 속성 생략은 유지, scheduledDate=null은 날짜 해제. 날짜 변경은 마감일에 영향 없음. 동일 값 변경은 새 버전·활동 없음. 같은 키 재생은 버전 검사 전 처리하며 사용자 소유권은 먼저 확인한다. 변경 결과가 날짜 없는 비완료 항목이면 입력함 접근을 유지하도록 isUnprocessed=true를 보충한다. 이 조건에서 명시적인 isUnprocessed=false는 422이며, 서버 보충값은 원래 요청의 재생 해시에 포함하지 않는다. 다른 실행일로 이동할 때 목적 날짜의 완료·취소 포함 전체 과제가 5개 이상이면 422 DAILY_TASK_LIMIT이다. 기존 5개 초과 자료는 보존하며 같은 실행일의 제목·상태·우선순위 수정은 허용한다. 생성과 날짜 이동은 목적 날짜별 잠금으로 직렬화한다. move up/down 단독 요청은 현재 실행일의 인접 항목과 dailyOrder를 원자적으로 교환한다. 완료·취소도 이동 대상이며 두 항목의 버전과 updatedAt을 증가시키고 order_changed 활동을 각각 기록한다. 응답은 요청한 원본이다. 맨 위 up/맨 아래 down은 no-op, 실행일 없음 또는 다른 필드 동반은 422다. 날짜 이동은 목적 날짜 max+1로 붙이고 남은 항목의 순서와 gap을 유지한다. 날짜 해제는 dailyOrder=null이다. 같은 날짜의 제목·상태·priority 변경은 순서를 유지한다. 모든 날짜 잠금을 오름차순으로 먼저 잡은 뒤 행을 잠그고 버전을 다시 확인하여 생성·이동·순서 변경을 직렬화한다. moveTo 단독 요청은 같은 사용자·날짜의 대상 ID가 가진 현재 줄 위치에 원본을 삽입하고 사이 항목을 한 칸씩 이동한다. 이동 구간의 기존 dailyOrder 값과 gap을 재사용하며 영향받는 모든 행의 버전·updatedAt·order_changed 활동을 원자적으로 갱신한다. 자기 자신은 no-op, 날짜가 다른 대상은 422, 없거나 다른 소유자 대상은 404다. 소스의 If-Match와 재생 키 규칙을 그대로 적용하며 여러 인접 이동 요청으로 분할하지 않는다.",
         "parameters": [
           {
             "$ref": "#/components/parameters/TaskId"
@@ -1087,6 +1087,11 @@
               "down"
             ],
             "description": "현재 실행일에서 인접한 앞/뒤 항목과 줄 순서를 교환한다. 반드시 move만 단독으로 요청하며 다른 필드와 함께 보내면 422."
+          },
+          "moveTo": {
+            "type": "string",
+            "format": "uuid",
+            "description": "현재 사용자·실행일의 대상 항목 ID. 원본을 대상의 이동 전 줄 위치에 삽입하고 사이 항목들을 순서대로 밀어낸다. moveTo만 단독으로 요청한다. 자기 자신은 no-op, 다른 날짜는 422, 없거나 다른 소유자 대상은 404. 영향을 받는 모든 행의 버전·시각·활동을 한 트랜잭션에 저장한다."
           }
         },
         "required": [],
@@ -1096,6 +1101,16 @@
             "if": {
               "required": [
                 "move"
+              ]
+            },
+            "then": {
+              "maxProperties": 1
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "moveTo"
               ]
             },
             "then": {

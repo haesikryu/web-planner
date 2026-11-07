@@ -422,6 +422,99 @@ describe("task API ownership, atomic changes and pagination", () => {
     expect(day.items.map((task: { id: string }) => task.id)).toEqual([b.id, a.id, c.id]);
     expect((await db.select().from(schema.taskActivities)).filter(item => item.type === "order_changed")).toHaveLength(2);
   });
+  it("inserts a dragged row at the target position and atomically shifts the whole range with gaps intact", async () => {
+    const date = "2026-11-07", items = [];
+    for (const title of ["A", "B", "C", "D", "E"]) items.push(await (await create({ title, scheduledDate: date })).json());
+    await patch(items[1].id, { scheduledDate: null }, { version: 1 });
+    const completed = await (await patch(items[2].id, { status: "completed" }, { version: 1 })).json();
+    const canceled = await (await patch(items[3].id, { status: "canceled" }, { version: 1 })).json();
+    const key = randomUUID(), input = { moveTo: items[3].id.toUpperCase() };
+    const response = await patch(items[0].id, input, { key, version: 1 });
+    expect(response.status).toBe(200); expect(response.headers.get("etag")).toBe('"v2"');
+    const moved = await response.json();
+    expect(moved).toMatchObject({ id: items[0].id, dailyOrder: 4, version: 2 });
+    const list = async () => (await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json()).items;
+    const day = await list();
+    expect(day.map((task: { id: string; dailyOrder: number }) => [task.id, task.dailyOrder])).toEqual([[items[2].id, 1], [items[3].id, 3], [items[0].id, 4], [items[4].id, 5]]);
+    expect(day[0]).toEqual({ ...completed, dailyOrder: 1, version: 3, updatedAt: moved.updatedAt });
+    expect(day[1]).toEqual({ ...canceled, dailyOrder: 3, version: 3, updatedAt: moved.updatedAt });
+    expect(day[3]).toEqual(items[4]);
+    expect((await db.select().from(schema.taskActivities)).filter(item => item.type === "completed" && item.invalidatedBy === null)).toHaveLength(1);
+    expect((await db.select().from(schema.taskActivities)).filter(item => item.type === "order_changed")).toHaveLength(3);
+    expect((await patch(items[2].id, { title: "stale middle" }, { version: 2 })).status).toBe(412);
+    expect((await patch(items[0].id, { moveTo: items[2].id }, { version: 2 })).status).toBe(200);
+    const restored = await list();
+    expect(restored.map((task: { id: string }) => task.id)).toEqual([items[0].id, items[2].id, items[3].id, items[4].id]);
+    expect(await (await patch(items[0].id, { moveTo: items[3].id }, { key, version: 1 })).json()).toEqual(moved);
+    expect(await list()).toEqual(restored);
+    expect((await patch(items[0].id, { moveTo: items[2].id }, { key, version: 1 })).status).toBe(409);
+    expect((await db.select().from(schema.taskActivities)).filter(item => item.type === "order_changed")).toHaveLength(6);
+  });
+  it("validates isolated drag targets and makes self drops replayable no-ops", async () => {
+    const date = "2026-11-07", a = await (await create({ title: "A", scheduledDate: date })).json();
+    const otherDay = await (await create({ title: "other day", scheduledDate: "2026-11-08" })).json();
+    const undated = await (await create({ title: "undated" })).json();
+    const privateTarget = await (await create({ title: "private", scheduledDate: date }, { actor: bob })).json();
+    const key = randomUUID(), before = await db.select().from(schema.tasks).orderBy(schema.tasks.id);
+    for (const input of [{ moveTo: null }, { moveTo: "invalid" }, { moveTo: a.id, move: "up" }, { moveTo: a.id, title: "hidden change" }, { moveTo: otherDay.id }, { moveTo: undated.id }]) {
+      expect((await patch(a.id, input, { key, version: 1 })).status).toBe(422);
+    }
+    for (const target of [randomUUID(), privateTarget.id]) expect((await patch(a.id, { moveTo: target }, { key, version: 1 })).status).toBe(404);
+    expect((await patch(a.id, { moveTo: a.id }, { key, version: 1, actor: bob })).status).toBe(404);
+    expect((await patch(undated.id, { moveTo: a.id }, { key, version: 1 })).status).toBe(422);
+    expect((await create({ title: "invalid", moveTo: a.id })).status).toBe(422);
+    expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
+    expect(await db.select().from(schema.tasks).orderBy(schema.tasks.id)).toEqual(before);
+    expect(await (await patch(a.id, { moveTo: a.id }, { key, version: 1 })).json()).toEqual(a);
+    await patch(a.id, { title: "later title" }, { version: 1 });
+    expect(await (await patch(a.id, { moveTo: a.id }, { key, version: 1 })).json()).toEqual(a);
+    expect((await db.select().from(schema.taskActivities)).filter(item => item.type === "order_changed")).toHaveLength(0);
+  });
+  it("serializes overlapping long-range drags and rolls back every shifted row on a fault", async () => {
+    const date = "2026-11-07", items = [];
+    for (const title of ["A", "B", "C", "D"]) items.push(await (await create({ title, scheduledDate: date })).json());
+    const responses = await Promise.all([patch(items[0].id, { moveTo: items[3].id }, { version: 1 }), patch(items[3].id, { moveTo: items[0].id }, { version: 1 })]);
+    expect(responses.map(response => response.status).sort()).toEqual([200, 412]);
+    const before = await db.select().from(schema.tasks).orderBy(schema.tasks.dailyOrder);
+    expect(before.map(task => task.version)).toEqual([2, 2, 2, 2]);
+    expect(before.map(task => task.dailyOrder)).toEqual([1, 2, 3, 4]);
+    const activities = await db.select().from(schema.taskActivities).orderBy(schema.taskActivities.id), key = randomUUID();
+    expect(activities).toHaveLength(4);
+    await db.execute(sql`CREATE FUNCTION reject_drag_activity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-drag-fault'; END $$`);
+    await db.execute(sql`CREATE TRIGGER drag_activity_failure BEFORE INSERT ON task_activities FOR EACH ROW EXECUTE FUNCTION reject_drag_activity()`);
+    try {
+      expect((await patch(before[0].id, { moveTo: before[3].id }, { key, version: 2 })).status).toBe(500);
+      expect(await db.select().from(schema.tasks).orderBy(schema.tasks.dailyOrder)).toEqual(before);
+      expect(await db.select().from(schema.taskActivities).orderBy(schema.taskActivities.id)).toEqual(activities);
+      expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
+    } finally { await db.execute(sql`DROP TRIGGER drag_activity_failure ON task_activities`); await db.execute(sql`DROP FUNCTION reject_drag_activity()`); }
+    expect(await (await patch(before[0].id, { moveTo: before[3].id }, { key, version: 2 })).json()).toMatchObject({ dailyOrder: 4, version: 3 });
+  });
+  it("serializes arbitrary drags with concurrent target transfers and new arrivals without losing rows", async () => {
+    const first = "2026-11-07", second = "2026-11-08";
+    const a = await (await create({ title: "A", scheduledDate: first })).json();
+    const b = await (await create({ title: "B", scheduledDate: first })).json();
+    const c = await (await create({ title: "C", scheduledDate: first })).json();
+    const d = await (await create({ title: "D", scheduledDate: second })).json();
+    const responses = await Promise.all([
+      patch(a.id, { moveTo: c.id }, { version: 1 }), patch(c.id, { scheduledDate: second }, { version: 1 }),
+      patch(d.id, { scheduledDate: first }, { version: 1 }), patch(b.id, { moveTo: a.id }, { version: 1 }),
+      create({ title: "E", scheduledDate: first })
+    ]);
+    for (const response of responses) {
+      expect([200, 201, 412, 422]).toContain(response.status);
+      if (response.status === 422) expect(await response.json()).toMatchObject({ code: "INVALID_INPUT" });
+    }
+    expect(responses[2].status).toBe(200); expect(responses[4].status).toBe(201);
+    const all = await db.select().from(schema.tasks);
+    expect(all.map(task => task.title).sort()).toEqual(["A", "B", "C", "D", "E"]);
+    for (const date of [first, second]) {
+      const day = all.filter(task => task.scheduledDate === date);
+      expect(day.length).toBeLessThanOrEqual(5);
+      expect(new Set(day.map(task => task.dailyOrder)).size).toBe(day.length);
+      expect(day.every(task => (task.dailyOrder ?? 0) > 0)).toBe(true);
+    }
+  });
   it("keeps gaps and appends moved tasks after the destination's maximum order", async () => {
     const date = "2026-11-07", other = "2026-11-08";
     const a = await (await create({ title: "A", scheduledDate: date })).json();

@@ -1,7 +1,7 @@
 "use client";
 
 import { Temporal } from "@js-temporal/polyfill";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 const weekdays = ["월", "화", "수", "목", "금", "토", "일"];
 
@@ -45,4 +45,23 @@ export function DiaryCalendar({ date, today, disabled, onSelect }: {
     })}</div>
     <button type="button" className="calendar-today" disabled={disabled} onClick={() => { setMonth(Temporal.PlainDate.from(today).with({ day: 1 }).toString()); onSelect(today); }}>오늘로 돌아가기</button>
   </section>;
+}
+
+export function DiaryDatePicker({ date, today, disabled, onSelect }: {
+  date: string;
+  today: string;
+  disabled: boolean;
+  onSelect: (date: string) => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [open, setOpen] = useState(false);
+  const dialogId = useId();
+  return <div className="diary-date-picker">
+    <button type="button" className="date-picker-trigger" disabled={disabled} aria-haspopup="dialog" aria-expanded={open} aria-controls={dialogId}
+      onClick={() => { dialog.current?.showModal(); setOpen(true); }}>날짜 선택</button>
+    <dialog ref={dialog} id={dialogId} className="diary-date-dialog" aria-label="날짜 선택" onClose={() => setOpen(false)}>
+      <div className="date-dialog-heading"><p>날짜를 골라 페이지를 펼치세요</p><button type="button" className="quiet-button" onClick={() => dialog.current?.close()} aria-label="달력 닫기">닫기</button></div>
+      <DiaryCalendar date={date} today={today} disabled={disabled} onSelect={value => { onSelect(value); dialog.current?.close(); }} />
+    </dialog>
+  </div>;
 }

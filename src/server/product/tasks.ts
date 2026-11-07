@@ -14,12 +14,16 @@ export function taskBody(row: typeof tasks.$inferSelect) {
   return { ...value, createdAt: value.createdAt.toISOString(), updatedAt: value.updatedAt.toISOString(), completedAt: value.completedAt?.toISOString() ?? null };
 }
 function normalizedInput(raw: unknown, create: boolean) {
-  const value = object(raw, create ? ["title", "scheduledDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind", "move"]);
+  const value = object(raw, create ? ["title", "scheduledDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind", "move", "moveTo"]);
   if ((!create && !Object.keys(value).length) || (create && !("title" in value))) throw new InputError("body");
-  const result: { title?: string; scheduledDate?: string | null; status?: TaskStatus; isUnprocessed?: boolean; priority?: TaskPriority; kind?: TaskKind; move?: TaskMove } = {};
+  const result: { title?: string; scheduledDate?: string | null; status?: TaskStatus; isUnprocessed?: boolean; priority?: TaskPriority; kind?: TaskKind; move?: TaskMove; moveTo?: string } = {};
   if ("move" in value) {
     if (create || Object.keys(value).length !== 1) throw new InputError("move");
     result.move = taskMove(value.move);
+  }
+  if ("moveTo" in value) {
+    if (create || Object.keys(value).length !== 1 || typeof value.moveTo !== "string" || !uuidPattern.test(value.moveTo)) throw new InputError("moveTo");
+    result.moveTo = value.moveTo.toLowerCase();
   }
   if ("title" in value) result.title = title(value.title);
   if ("scheduledDate" in value) result.scheduledDate = value.scheduledDate === null ? null : calendarDate(value.scheduledDate);
@@ -74,22 +78,34 @@ export async function patchTask(actor: Actor, id: string, key: string, version: 
     for (const date of [...new Set([observed.scheduledDate, destination].filter((value): value is string => value !== null))].sort()) await lockDate(tx, "task-day", actor.id, date);
     const row = await owned(tx, id, actor.id, true);
     if (row.version !== version) throw new HttpError(412, "VERSION_CONFLICT", "항목이 변경되었습니다. 최신 내용을 확인해주세요.");
-    if (input.move) {
+    if (input.move || input.moveTo) {
       if (!row.scheduledDate) throw new InputError("scheduledDate");
+      if (input.moveTo) {
+        // Do not acquire an out-of-order target-date/row lock. The source-day lock already
+        // protects any valid target, while another owner's or another day's row is rejected.
+        const target = await owned(tx, input.moveTo, actor.id);
+        if (target.scheduledDate !== row.scheduledDate) throw new InputError("moveTo");
+      }
       const day = await tx.select().from(tasks).where(and(eq(tasks.ownerId, actor.id), eq(tasks.scheduledDate, row.scheduledDate)))
         .orderBy(asc(tasks.dailyOrder), asc(tasks.createdAt), asc(tasks.id)).for("update");
-      const index = day.findIndex(task => task.id === id), neighbor = day[index + (input.move === "up" ? -1 : 1)];
-      if (!neighbor) return { status: 200, body: taskBody(row), etag: etag(row.version) };
-      if (neighbor.version >= 2147483647) throw new InputError("version");
+      const index = day.findIndex(task => task.id === id);
+      const targetIndex = input.moveTo ? day.findIndex(task => task.id === input.moveTo) : index + (input.move === "up" ? -1 : 1);
+      if (targetIndex === index || targetIndex < 0 || targetIndex >= day.length) return { status: 200, body: taskBody(row), etag: etag(row.version) };
+      const first = Math.min(index, targetIndex), last = Math.max(index, targetIndex);
+      const affected = day.slice(first, last + 1), reordered = [...day];
+      reordered.splice(index, 1); reordered.splice(targetIndex, 0, row);
+      const positions = reordered.slice(first, last + 1).map((task, offset) => ({ id: task.id, dailyOrder: affected[offset].dailyOrder }));
+      if (affected.some(task => task.version >= 2147483647)) throw new InputError("version");
       const now = new Date();
-      const changed = await tx.update(tasks).set({ dailyOrder: sql`CASE WHEN ${tasks.id} = ${id} THEN ${neighbor.dailyOrder}::integer ELSE ${row.dailyOrder}::integer END`, version: sql`${tasks.version} + 1`, updatedAt: now })
-        .where(and(eq(tasks.ownerId, actor.id), inArray(tasks.id, [id, neighbor.id]))).returning();
-      await tx.insert(taskActivities).values([id, neighbor.id].map(taskId => ({ ownerId: actor.id, taskId, type: "order_changed", occurredAt: now })));
+      const orderCases = positions.map(position => sql`WHEN ${tasks.id} = ${position.id} THEN ${position.dailyOrder}::integer`);
+      const changed = await tx.update(tasks).set({ dailyOrder: sql`CASE ${sql.join(orderCases, sql` `)} ELSE ${tasks.dailyOrder} END`, version: sql`${tasks.version} + 1`, updatedAt: now })
+        .where(and(eq(tasks.ownerId, actor.id), inArray(tasks.id, positions.map(task => task.id)))).returning();
+      await tx.insert(taskActivities).values(positions.map(task => ({ ownerId: actor.id, taskId: task.id, type: "order_changed", occurredAt: now })));
       const updated = changed.find(task => task.id === id);
-      if (!updated || changed.length !== 2) throw new HttpError(412, "VERSION_CONFLICT", "최신 순서를 확인해주세요.");
+      if (!updated || changed.length !== affected.length) throw new HttpError(412, "VERSION_CONFLICT", "최신 순서를 확인해주세요.");
       return { status: 200, body: taskBody(updated), etag: etag(updated.version) };
     }
-    const { move: _move, ...changes } = input;
+    const { move: _move, moveTo: _moveTo, ...changes } = input;
     const nextStatus = input.status ?? row.status;
     const nextDate = input.scheduledDate === undefined ? row.scheduledDate : input.scheduledDate;
     if (nextStatus !== "completed" && nextDate === null) {

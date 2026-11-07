@@ -14,7 +14,7 @@
 | schedule_entries | owner_id, entry_date, slots, version, updated_at | owner·entry_date 복합키, 정렬된 최대 36개 슬롯 JSONB, 양수 저장 버전 |
 | idempotency_records | owner_id, method, path, key, request_hash, state, response, expires_at | owner·method·path·key 유일 |
 
-tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. 첫 기능의 due_date는 원문 보존용 nullable 필드이며 이 기능 API에서 신규 지정·변경하지 않는다. 후속 명세에서 추가한다. status는 open·completed·deferred·canceled이고 화면에 □ 진행 전·✓ 완료·→ 미룸·× 취소로 표시한다. 기존 priority는 high·medium·low이고 현재 화면에서는 표시하거나 선택하지 않는다. 화면의 중요도는 날짜별 daily_order의 오름차순 위치로 표현한다. 등록 화면은 제목만 입력받고 selected date를 scheduledDate로, isUnprocessed=false로 보내 priority의 기본값 medium을 사용한다. 현재 화면은 고정된 다섯 줄에서 제목을 순차 입력하고 view=day의 순서를 위·아래 이동으로 바꾼다. priority·kind는 생성·수정 요청에 포함하지 않는다. 날짜를 생략한 API 생성의 날짜 없음·미정리 기본값은 유지한다.
+tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. 첫 기능의 due_date는 원문 보존용 nullable 필드이며 이 기능 API에서 신규 지정·변경하지 않는다. 후속 명세에서 추가한다. status는 open·completed·deferred·canceled이고 화면에 □ 진행 전·✓ 완료·→ 미룸·× 취소로 표시한다. 기존 priority는 high·medium·low이고 현재 화면에서는 표시하거나 선택하지 않는다. 화면의 중요도는 날짜별 daily_order의 오름차순 위치로 표현한다. 등록 화면은 제목만 입력받고 selected date를 scheduledDate로, isUnprocessed=false로 보내 priority의 기본값 medium을 사용한다. 현재 화면은 고정된 다섯 줄에서 제목을 순차 입력하고 view=day의 순서를 드래그 핸들로 바꾸며 화면은 moveTo를 보낸다. priority·kind는 생성·수정 요청에 포함하지 않는다. 날짜를 생략한 API 생성의 날짜 없음·미정리 기본값은 유지한다.
 
 기존 kind 필드의 task·appointment·event와 기본값 task는 기존 자료·API·요청 재생 호환을 위해 내부적으로 보존한다. 유형은 현재 사용 기능이 아니며 화면에서 선택·표시하지 않고 생성·수정 폼도 kind를 전송하지 않는다. `0002_task_priority_kind_and_status.sql`은 기존 제목·날짜·버전을 보존한 채 priority·kind를 추가한다. 유형 화면 제거 때문에 기존 API·DB 제약을 바꾸거나 kind 값을 재기록하지 않는다. 자유 기록은 별도 `0003_daily_journal.sql`로 추가하며 기존 과제 자료를 변경하지 않는다. 0003 자유 기록, 0004 일정, 0005 날짜별 순서를 포함하여 실행 테이블은 9개, 순차 마이그레이션은 6개다.
 
@@ -30,15 +30,19 @@ tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instan
 
 신규 생성과 다른 날짜로 이동하는 항목은 대상 날짜의 max(daily_order)+1을 사용한다. 실행일 해제는 null로 바꾸며 제목·상태·완료 취소는 순서를 유지한다. owner·날짜 잠금 아래 개수와 마지막 값을 읽으므로 동시 배정과 이동이 같은 마지막 순서를 계산하거나 한도를 초과하지 않는다. 관련 날짜는 정렬된 순서로 잠그고 대상 행의 버전과 날짜를 다시 검사한다.
 
-API 0.8의 순서 변경은 단독 `{move:"up"}` 또는 `{move:"down"}` PATCH다. 다른 수정 필드와 섞거나 dailyOrder를 직접 요청하면 422이며, 날짜 없는 항목도 422다. 유효 If-Match의 경계 이동은 no-op이고 버전·활동을 늘리지 않는다. 유효 이동은 날짜 잠금·날짜 내 행 잠금 뒤 이웃 두 행의 daily_order를 교환하며 두 행 모두 version과 updated_at을 갱신하고 order_changed 활동을 남긴다. 두 행·두 활동·재생 응답은 같은 트랜잭션으로 커밋하거나 롤백한다. 타인 항목을 이웃으로 사용하지 않으며 과거 버전으로 한 행을 편집해도 412를 받는다. 같은 키의 재시도는 원래 응답을 재생하고 다시 이동하지 않는다.
+API 0.9의 새 순서 변경은 단독 `{moveTo: targetTaskId}` PATCH다. 다른 수정 필드와 섞거나 dailyOrder를 직접 요청하면 422이며, 날짜 없는 소스 또는 다른 날짜 대상도 422다. 없는 대상과 타인 대상은 404로 처리한다. 유효한 소스 If-Match를 먼저 확인하고 같은 항목을 대상으로 하면 no-op이다. 기존 단독 `{move:"up"}`·`{move:"down"}`도 호환 유지하며 경계 이동은 버전·활동을 늘리지 않는다.
+
+moveTo는 대상의 이동 전 인덱스에 소스를 삽입한다. [A,B,C,D]에서 A→C는 [B,C,A,D], D→B는 [A,D,B,C]다. 소스부터 대상까지 닫힌 구간의 기존 daily_order 숫자와 간격을 재사용하여 변경된 순서대로 배정한다. 구간 모든 행은 version+1·동일 updated_at·각 order_changed 활동을 남기며 구간 밖 행은 변경하지 않는다. owner·날짜 잠금과 행 잠금 아래 구간 전체·활동·재생 응답을 같은 트랜잭션으로 커밋하거나 롤백한다. 중간 행의 과거 버전 편집도 412로 검출되며 같은 키의 재시도는 원래 응답을 재생하고 다시 이동하지 않는다.
+
+이번 드래그 계약은 기존 daily_order 스키마와 daily-order-v1 커서를 사용하며 추가 테이블·마이그레이션·API 경로를 만들지 않는다. 날짜별 일정 9페이지와 책 페이지 탭도 화면 상태일 뿐 DB 문서를 나누지 않는다.
 
 체험 저장소는 schemaVersion 5에서 날짜별 양수 순서를 검증한다. 이전 버전의 누락 순서는 생성 시각·ID 순으로 메모리에서 보충하고 성공한 저장에만 새 형식으로 반영한다. 최신 형식의 잘못된 순서·중복 순서는 조용히 재배열하거나 빈 자료로 덮어쓰지 않는다.
 
-클라이언트는 inline 편집을 시작한 원본 제목·버전·날짜를 보관한다. 편집 중 배경 조회로 이 버전을 갱신하지 않으며, 최신 원본이 내 제목과 같아지거나 날짜가 바뀌어도 자동 병합하지 않는다. 순서 이동 성공 후 전체 day 목록을 다시 읽어 교환된 이웃의 새 버전까지 반영한다. 과거 요청 재생 응답에서 없는 dailyOrder는 null로 보충하되 저장 원문·해시를 바꾸지 않고, 현재 원본 재조회로 실제 순서를 얻는다.
+클라이언트는 inline 편집을 시작한 원본 제목·버전·날짜를 보관한다. 편집 중 배경 조회로 이 버전을 갱신하지 않으며, 최신 원본이 내 제목과 같아지거나 날짜가 바뀌어도 자동 병합하지 않는다. 순서 이동 성공 후 전체 day 목록을 다시 읽어 영향 구간의 새 버전까지 반영한다. 과거 요청 재생 응답에서 없는 dailyOrder는 null로 보충하되 저장 원문·해시를 바꾸지 않고, 현재 원본 재조회로 실제 순서를 얻는다.
 
 `0004_daily_schedule.sql`은 `schedule_entries`와 JSONB 검증 함수를 추가한다. 각 행은 계정·날짜별 36칸 일정 문서이고 자유 기록·과제와 독립된다. slots는 `{startMinute, title}` 객체의 배열이며 시작 분 360~1410, 30분 배수, 중복 없음, 오름차순을 강제한다. 제목은 NFC·trim 후 1~200 코드 포인트이고 CR·LF·NUL은 금지한다. API에서 입력 순서를 정규화하고 DB 제약으로 배열 구조·중복·범위·제목을 재검증한다. 빈 배열은 유효하며 updated_at은 UTC instant다.
 
-API 0.8의 `GET/PUT /api/schedule/{date}`는 date·slots·version·updatedAt과 ETag를 사용한다. 없는 날의 GET은 빈 slots·v0·updatedAt null이며 행을 만들지 않는다. 빈 최초 PUT과 현재 정규화 배열이 같은 PUT은 no-op이다. 실제 저장은 version을 증가시키며 슬롯 삭제도 배열 교체로 원자적으로 반영한다.
+API 0.9의 `GET/PUT /api/schedule/{date}`는 date·slots·version·updatedAt과 ETag를 사용한다. 없는 날의 GET은 빈 slots·v0·updatedAt null이며 행을 만들지 않는다. 빈 최초 PUT과 현재 정규화 배열이 같은 PUT은 no-op이다. 실제 저장은 version을 증가시키며 슬롯 삭제도 배열 교체로 원자적으로 반영한다.
 
 일정 PUT은 세션·Origin·CSRF·요청 키·If-Match 확인 후 재생을 먼저 검사하고, `schedule` scope의 owner·날짜 advisory lock과 행 잠금으로 v0 최초 저장 경합까지 보호한다. 오래된 버전은 412, 같은 키의 다른 본문·버전은 409다. 일정 변경과 재생 응답은 같은 트랜잭션에 커밋·롤백하고, 공통 24시간 보관 기간의 재시도 정책을 적용한다. 일정은 과제 활동을 만들지 않으며 task-day·journal·schedule 잠금 scope를 구분한다.
 
@@ -50,7 +54,7 @@ API 0.8의 `GET/PUT /api/schedule/{date}`는 date·slots·version·updatedAt과 
 
 본문 content는 일반 텍스트이며 CRLF를 LF로 바꾼 뒤 최대 10,000 Unicode 코드 포인트를 허용한다. NUL은 API·공통 규칙에서 거부하고 PostgreSQL text에도 저장하지 않는다. trim·NFC 정규화는 하지 않으며 연속 공백·빈 줄·마지막 줄바꿈을 보존한다. 빈 문자열은 유효하다. DB는 길이·CRLF·날짜 범위·양수 저장 버전 제약을 유지하고, 클라이언트와 서버는 `src/domain/journal.ts`를 공유한다.
 
-OpenAPI 0.8의 `GET /api/journal/{date}`와 `PUT /api/journal/{date}`는 `{date, content, version, updatedAt}`과 ETag를 사용한다. 없는 날짜는 행을 만들지 않고 빈 content·version 0·updatedAt null·ETag `"v0"`를 반환한다. DB에 실제 저장된 행은 version 1 이상이다. 없는 날짜에 빈 본문을 PUT하면 no-op으로 v0를 유지하며, 기존 글을 비우면 같은 행을 빈 본문으로 변경하고 버전을 증가시킨다.
+OpenAPI 0.9의 `GET /api/journal/{date}`와 `PUT /api/journal/{date}`는 `{date, content, version, updatedAt}`과 ETag를 사용한다. 없는 날짜는 행을 만들지 않고 빈 content·version 0·updatedAt null·ETag `"v0"`를 반환한다. DB에 실제 저장된 행은 version 1 이상이다. 없는 날짜에 빈 본문을 PUT하면 no-op으로 v0를 유지하며, 기존 글을 비우면 같은 행을 빈 본문으로 변경하고 버전을 증가시킨다.
 
 자유 기록의 쓰기 순서는 다음과 같다.
 
@@ -69,7 +73,7 @@ OpenAPI 0.8의 `GET /api/journal/{date}`와 `PUT /api/journal/{date}`는 `{date,
 1. 세션·CSRF·입력 형식 확인.
 2. 사용자 범위에서 대상 과제 소유권 확인.
 3. 키 선점 또는 동일 요청 재생 확인.
-4. 관련 owner·날짜 잠금을 정렬된 순서로 얻고 행을 잠근 뒤 버전·날짜를 재검사한다. 생성·날짜 배정은 5개와 마지막 순서를 확인하며 move는 이웃 두 행을 원자적으로 바꾼다.
+4. 관련 owner·날짜 잠금을 정렬된 순서로 얻고 행을 잠근 뒤 버전·날짜를 재검사한다. 생성·날짜 배정은 5개와 마지막 순서를 확인하며 moveTo는 영향 구간 전체를, 기존 move는 이웃 두 행을 원자적으로 바꾼다.
 5. 필요한 활동과 재생 응답 저장.
 6. 트랜잭션 커밋 후 성공 응답.
 

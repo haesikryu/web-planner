@@ -23,7 +23,7 @@ type DemoTask = {
 };
 type JournalRequest = { key: string; date: string; content: string; version: number; expiresAt: string; response: JournalEntry };
 type ScheduleRequest = { key: string; date: string; slots: ScheduleSlot[]; version: number; expiresAt: string; response: ScheduleEntry };
-type TaskInput = Partial<Pick<DemoTask, "title" | "scheduledDate" | "status" | "priority" | "kind" | "isUnprocessed">> & { move?: TaskMove };
+type TaskInput = Partial<Pick<DemoTask, "title" | "scheduledDate" | "status" | "priority" | "kind" | "isUnprocessed">> & { move?: TaskMove; moveTo?: string };
 type TaskRequest = { key: string; method: "POST" | "PATCH"; path: string; input: TaskInput; version: number | null; expiresAt: string; response: DemoTask };
 type DemoState = { schemaVersion: 5; timezone: string; settingsVersion: number; tasks: DemoTask[]; journals: JournalEntry[]; journalRequests: JournalRequest[];
   schedules: ScheduleEntry[]; scheduleRequests: ScheduleRequest[]; taskRequests: TaskRequest[] };
@@ -78,7 +78,7 @@ function dayOrder(left: DemoTask, right: DemoTask): number {
 }
 
 function taskFields(create: boolean) {
-  return create ? ["title", "scheduledDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind", "move"];
+  return create ? ["title", "scheduledDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind", "move", "moveTo"];
 }
 
 function normalizedTaskInput(raw: unknown, create: boolean): TaskInput {
@@ -87,6 +87,10 @@ function normalizedTaskInput(raw: unknown, create: boolean): TaskInput {
   if ("move" in input) {
     if (Object.keys(input).length !== 1) throw new InputError("move");
     return { move: taskMove(input.move) };
+  }
+  if ("moveTo" in input) {
+    if (Object.keys(input).length !== 1 || typeof input.moveTo !== "string" || !uuidPattern.test(input.moveTo)) throw new InputError("moveTo");
+    return { moveTo: input.moveTo.toLowerCase() };
   }
   const result: TaskInput = {};
   if ("title" in input) result.title = title(input.title);
@@ -382,16 +386,24 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
       const { saved, ...write } = taskWrite(state, "PATCH", url.pathname, init, instant);
       if (saved) return json(saved.response, 200, saved.response.version);
       if (write.version !== task.version) throw new DemoRequestError(412, "VERSION_CONFLICT", "항목이 변경되었습니다. 최신 내용을 확인해주세요.");
-      if (write.input.move) {
-        if (task.scheduledDate === null) throw new InputError("move");
+      if (write.input.move || write.input.moveTo) {
+        if (task.scheduledDate === null) throw new InputError("scheduledDate");
+        if (write.input.moveTo) {
+          const target = state.tasks.find(item => item.id === write.input.moveTo);
+          if (!target) throw new DemoRequestError(404, "NOT_FOUND", "항목을 찾을 수 없습니다.");
+          if (target.scheduledDate !== task.scheduledDate) throw new InputError("moveTo");
+        }
         const day = state.tasks.filter(item => item.scheduledDate === task.scheduledDate).sort(dayOrder);
-        const neighbor = day[day.indexOf(task) + (write.input.move === "up" ? -1 : 1)];
+        const index = day.indexOf(task), targetIndex = write.input.moveTo ? day.findIndex(item => item.id === write.input.moveTo) : index + (write.input.move === "up" ? -1 : 1);
         let next = task;
-        if (neighbor) {
-          next = { ...task, dailyOrder: neighbor.dailyOrder, version: task.version + 1, updatedAt: instant.toISOString() };
-          const adjacent = { ...neighbor, dailyOrder: task.dailyOrder, version: neighbor.version + 1, updatedAt: instant.toISOString() };
-          state.tasks[state.tasks.indexOf(task)] = next;
-          state.tasks[state.tasks.indexOf(neighbor)] = adjacent;
+        if (targetIndex !== index && targetIndex >= 0 && targetIndex < day.length) {
+          const first = Math.min(index, targetIndex), last = Math.max(index, targetIndex);
+          const affected = day.slice(first, last + 1), reordered = [...day];
+          if (affected.some(item => item.version >= 2147483647)) throw new InputError("version");
+          reordered.splice(index, 1); reordered.splice(targetIndex, 0, task);
+          const changed = reordered.slice(first, last + 1).map((item, offset) => ({ ...item, dailyOrder: affected[offset].dailyOrder, version: item.version + 1, updatedAt: instant.toISOString() }));
+          state.tasks = state.tasks.map(item => changed.find(candidate => candidate.id === item.id) ?? item);
+          next = changed.find(item => item.id === task.id) ?? task;
         }
         rememberTask(state, { ...write, response: next }, instant);
         storage.setItem(STORAGE_KEY, JSON.stringify(state));

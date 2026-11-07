@@ -581,6 +581,69 @@ describe("browser-only demo transport", () => {
     expect((await demo.request(`/api/tasks/${second.id}`, mutation("PATCH", { move: "down" }, 2, requestKey))).status).toBe(409);
   });
 
+  it("inserts dragged rows at arbitrary target positions and preserves shifted content, gaps and replay snapshots", async () => {
+    const storage = memoryStorage();
+    let instant = new Date("2026-11-07T00:00:00.000Z");
+    const demo = createDemoTransport(storage, () => instant), items = [];
+    for (const title of ["A", "B", "C", "D", "E"]) items.push(await (await demo.request("/api/tasks", mutation("POST", { title, scheduledDate: "2026-11-07" }))).json());
+    await demo.request(`/api/tasks/${items[1].id}`, mutation("PATCH", { scheduledDate: null }, 1));
+    const completed = await (await demo.request(`/api/tasks/${items[2].id}`, mutation("PATCH", { status: "completed" }, 1))).json();
+    const canceled = await (await demo.request(`/api/tasks/${items[3].id}`, mutation("PATCH", { status: "canceled" }, 1))).json();
+    instant = new Date("2026-11-07T00:01:00.000Z");
+    const requestKey = crypto.randomUUID(), request = mutation("PATCH", { moveTo: items[3].id.toUpperCase() }, 1, requestKey);
+    const response = await demo.request(`/api/tasks/${items[0].id}`, request);
+    expect(response.status).toBe(200); expect(response.headers.get("ETag")).toBe('"v2"');
+    const moved = await response.json();
+    expect(moved).toEqual({ ...items[0], dailyOrder: 4, version: 2, updatedAt: instant.toISOString() });
+    const list = async () => (await (await createDemoTransport(storage, () => instant).request("/api/tasks?view=day&date=2026-11-07")).json()).items;
+    expect(await list()).toEqual([
+      { ...completed, dailyOrder: 1, version: 3, updatedAt: instant.toISOString() },
+      { ...canceled, dailyOrder: 3, version: 3, updatedAt: instant.toISOString() }, moved, items[4]
+    ]);
+    expect((await demo.request(`/api/tasks/${items[2].id}`, mutation("PATCH", { title: "stale middle" }, 2))).status).toBe(412);
+    expect((await demo.request(`/api/tasks/${items[0].id}`, mutation("PATCH", { moveTo: items[2].id }, 2))).status).toBe(200);
+    expect((await list()).map((task: { id: string; dailyOrder: number }) => [task.id, task.dailyOrder])).toEqual([[items[0].id, 1], [items[2].id, 3], [items[3].id, 4], [items[4].id, 5]]);
+    const before = storage.getItem(key);
+    expect(await (await createDemoTransport(storage, () => instant).request(`/api/tasks/${items[0].id}`, mutation("PATCH", { moveTo: items[3].id }, 1, requestKey))).json()).toEqual(moved);
+    expect((await demo.request(`/api/tasks/${items[0].id}`, mutation("PATCH", { moveTo: items[2].id }, 1, requestKey))).status).toBe(409);
+    expect(storage.getItem(key)).toBe(before);
+  });
+
+  it("rejects invalid drag targets without writes and persists self drops as no-ops", async () => {
+    const storage = memoryStorage(), demo = createDemoTransport(storage);
+    const a = await (await demo.request("/api/tasks", mutation("POST", { title: "A", scheduledDate: "2026-11-07" }))).json();
+    const other = await (await demo.request("/api/tasks", mutation("POST", { title: "other", scheduledDate: "2026-11-08" }))).json();
+    const undated = await (await demo.request("/api/tasks", mutation("POST", { title: "undated" }))).json();
+    const before = storage.getItem(key), requestKey = crypto.randomUUID();
+    for (const input of [{ moveTo: null }, { moveTo: "invalid" }, { moveTo: a.id, move: "up" }, { moveTo: a.id, title: "changed" }, { moveTo: other.id }, { moveTo: undated.id }]) {
+      expect((await demo.request(`/api/tasks/${a.id}`, mutation("PATCH", input, 1, requestKey))).status).toBe(422);
+    }
+    expect((await demo.request(`/api/tasks/${a.id}`, mutation("PATCH", { moveTo: crypto.randomUUID() }, 1, requestKey))).status).toBe(404);
+    expect((await demo.request(`/api/tasks/${undated.id}`, mutation("PATCH", { moveTo: a.id }, 1, requestKey))).status).toBe(422);
+    expect((await demo.request("/api/tasks", mutation("POST", { title: "invalid", moveTo: a.id }))).status).toBe(422);
+    expect(storage.getItem(key)).toBe(before);
+    const request = mutation("PATCH", { moveTo: a.id }, 1, requestKey);
+    expect(await (await demo.request(`/api/tasks/${a.id}`, request)).json()).toEqual(a);
+    await demo.request(`/api/tasks/${a.id}`, mutation("PATCH", { title: "changed later" }, 1));
+    expect(await (await createDemoTransport(storage).request(`/api/tasks/${a.id}`, request)).json()).toEqual(a);
+    expect(await (await demo.request(`/api/tasks/${a.id}`)).json()).toMatchObject({ title: "changed later", version: 2 });
+  });
+
+  it("commits all dragged and shifted rows together with their replay record or retains the original snapshot", async () => {
+    const storage = memoryStorage(), demo = createDemoTransport(storage), items = [];
+    for (const title of ["A", "B", "C", "D"]) items.push(await (await demo.request("/api/tasks", mutation("POST", { title, scheduledDate: "2026-11-07" }))).json());
+    const before = storage.getItem(key), request = mutation("PATCH", { moveTo: items[3].id }, 1);
+    const setter = vi.spyOn(storage, "setItem").mockImplementation(() => { throw new Error("Quota exceeded"); });
+    expect((await demo.request(`/api/tasks/${items[0].id}`, request)).status).toBe(500);
+    expect(storage.getItem(key)).toBe(before); setter.mockRestore();
+    const response = await demo.request(`/api/tasks/${items[0].id}`, request); expect(response.status).toBe(200);
+    const moved = await response.json(), restored = createDemoTransport(storage);
+    const day = (await (await restored.request("/api/tasks?view=day&date=2026-11-07")).json()).items;
+    expect(day.map((task: { id: string }) => task.id)).toEqual([items[1].id, items[2].id, items[3].id, items[0].id]);
+    expect(day.map((task: { version: number }) => task.version)).toEqual([2, 2, 2, 2]);
+    expect(await (await restored.request(`/api/tasks/${items[0].id}`, request)).json()).toEqual(moved);
+  });
+
   it("treats boundary moves as replayable no-ops and rejects undated or combined move requests", async () => {
     const storage = memoryStorage(), demo = createDemoTransport(storage);
     const first = await (await demo.request("/api/tasks", mutation("POST", { title: "첫째", scheduledDate: "2026-11-07" }))).json();
