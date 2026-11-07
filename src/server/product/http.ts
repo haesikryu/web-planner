@@ -27,7 +27,7 @@ export async function authenticated(request: Request, write: boolean, action: (a
     return apiError(500, "INTERNAL_ERROR", "처리를 확인할 수 없습니다. 같은 요청으로 다시 시도해주세요.");
   }
 }
-export async function readJson(request: Request): Promise<unknown> {
+export async function readJson(request: Request, maxBytes = 16384): Promise<unknown> {
   if (request.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json") throw new InputError("content-type");
   // Bounded stream: do not allocate an unbounded body before validating it.
   const reader = request.body?.getReader();
@@ -36,7 +36,7 @@ export async function readJson(request: Request): Promise<unknown> {
   while (true) {
     const { done, value } = await reader.read(); if (done) break;
     size += value.byteLength;
-    if (size > 16384) { await reader.cancel(); throw new InputError("body"); }
+    if (size > maxBytes) { await reader.cancel(); throw new InputError("body"); }
     chunks.push(value);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw new InputError("body"); }
@@ -46,10 +46,10 @@ export function requestKey(request: Request): string {
   if (!value || !uuidPattern.test(value)) throw new InputError("Idempotency-Key");
   return value.toLowerCase();
 }
-export function expectedVersion(request: Request): number {
+export function expectedVersion(request: Request, allowZero = false): number {
   const value = request.headers.get("if-match");
   if (!value) throw new HttpError(428, "PRECONDITION_REQUIRED", "최신 버전이 필요합니다.");
-  if (!/^"v[1-9][0-9]*"$/u.test(value)) throw new InputError("If-Match");
+  if (!(allowZero ? /^"v(?:0|[1-9][0-9]*)"$/u : /^"v[1-9][0-9]*"$/u).test(value)) throw new InputError("If-Match");
   const result = Number(value.slice(2, -1));
   if (!Number.isSafeInteger(result) || result > 2147483646) throw new InputError("If-Match");
   return result;

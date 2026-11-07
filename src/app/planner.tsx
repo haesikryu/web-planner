@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { title as normalizeTitle } from "@/domain/rules";
 import { Temporal } from "@js-temporal/polyfill";
 import { DiaryCalendar } from "./diary-calendar";
+import { JournalEditor, type JournalState } from "./journal-editor";
 import { type TaskPriority, type TaskStatus, taskPriority, taskStatus } from "@/domain/task-options";
 
 export type PlannerSession = { userId: string; timezone: string; settingsVersion: number; serverDate: string; csrfToken: string };
@@ -44,6 +45,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
   const [zone, setZone] = useState(initialSession.timezone);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
+  const [journalState, setJournalState] = useState<JournalState>({ dirty: false, busy: false, pending: false, pendingDate: null });
   const [editing, setEditing] = useState<{ task: Task; title: string; date: string; status: TaskStatus } | null>(null);
   const currentOwner = useRef(initialSession.userId), operation = useRef(false), loadSequence = useRef(0);
   const calendar = useRef(`${initialSession.timezone}|${initialSession.serverDate}`);
@@ -68,7 +70,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
   const reload = useCallback(async () => {
     const sequence = ++loadSequence.current;
     const fresh = await verifySession();
-    const date = selectedDate ?? fresh.serverDate;
+    const date = journalState.pendingDate ?? selectedDate ?? fresh.serverDate;
     const values = await Promise.all(views.map(async view => {
       const response = await request(listUrl(view.id, date), { cache: "no-store" });
       if (!response.ok) throw new Error("목록을 불러오지 못했습니다. 새로고침으로 다시 확인해주세요.");
@@ -77,7 +79,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     const confirmed = await verifySession();
     if (confirmed.timezone !== fresh.timezone || confirmed.serverDate !== fresh.serverDate) throw new Error("날짜 기준이 변경되었습니다. 목록을 새로고침해주세요.");
     if (sequence === loadSequence.current && currentOwner.current) setPages(Object.fromEntries(values) as Record<View, Page>);
-  }, [verifySession, request, selectedDate]);
+  }, [verifySession, request, selectedDate, journalState.pendingDate]);
   useEffect(() => {
     const epoch = statusEpoch.current;
     reload().then(() => { if (epoch === statusEpoch.current) setMessage(demo ? "이 탭에 저장된 테스트 목록입니다." : "서버에 저장된 목록입니다."); })
@@ -88,10 +90,10 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); window.clearInterval(timer); loadSequence.current++; };
   }, [reload, demo]);
   useEffect(() => {
-    if (!draft && !pending && !editing && zone === session.timezone) return;
+    if (!draft && !pending && !editing && !journalState.dirty && !journalState.pending && zone === session.timezone) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
-  }, [draft, pending, editing, zone, session.timezone]);
+  }, [draft, pending, editing, journalState.dirty, journalState.pending, zone, session.timezone]);
 
   async function send(value: Pending) {
     if (operation.current || value.ownerId !== currentOwner.current) return;
@@ -123,7 +125,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     finally { operation.current = false; setBusy(false); }
   }
   function mutate(path: string, method: Pending["method"], body: object, version?: number, fromEditor = false) {
-    if (pending || locked || (editing && !fromEditor)) return;
+    if (pending || locked || journalState.busy || journalState.pending || (editing && !fromEditor)) return;
     void send({ path, method, body, version, key: crypto.randomUUID(), startedAt: Date.now(), ownerId: currentOwner.current });
   }
   function update(task: Task, body: object, fromEditor = false) { mutate(`/api/tasks/${task.id}`, "PATCH", body, task.version, fromEditor); }
@@ -145,8 +147,8 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     catch (cause) { if (epoch === statusEpoch.current) setError(cause instanceof Error ? cause.message : "목록을 확인해주세요."); }
   }
   async function signOut() {
-    if ((draft || pending || editing || zone !== session.timezone) && !window.confirm(demo ? "저장하지 않은 입력이 있습니다. 테스트를 나가면 입력을 지웁니다. 계속할까요?" : "저장하지 않은 입력이 있습니다. 로그아웃하면 입력을 지웁니다. 계속할까요?")) return;
-    if (operation.current) return;
+    if (operation.current || journalState.busy) return;
+    if ((draft || pending || editing || journalState.dirty || journalState.pending || zone !== session.timezone) && !window.confirm(demo ? "저장하지 않은 입력이 있습니다. 테스트를 나가면 입력을 지웁니다. 계속할까요?" : "저장하지 않은 입력이 있습니다. 로그아웃하면 입력을 지웁니다. 계속할까요?")) return;
     operation.current = true; setBusy(true);
     try {
       const fresh = await verifySession();
@@ -156,12 +158,12 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     } catch (cause) { setError(cause instanceof Error ? cause.message : "연결을 확인해주세요."); }
     finally { operation.current = false; setBusy(false); }
   }
-  const disabled = busy || Boolean(pending) || locked;
-  const date = Temporal.PlainDate.from(selectedDate ?? session.serverDate);
+  const disabled = busy || Boolean(pending) || locked || journalState.busy || journalState.pending;
+  const date = Temporal.PlainDate.from(journalState.pendingDate ?? selectedDate ?? session.serverDate);
   const isToday = date.toString() === session.serverDate;
   const navigationDisabled = disabled || Boolean(editing);
   function selectDate(value: string) {
-    if (operation.current || pending || locked || editing) return;
+    if (operation.current || pending || locked || editing || journalState.busy || journalState.pending) return;
     setCalendarOpen(false);
     const next = value === session.serverDate ? null : value;
     if (selectedDateRef.current === next) return;
@@ -191,7 +193,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     </section>; }
   return <main id="main" className="planner diary-app">
     <div className="diary-toolbar"><div><p className="eyebrow">A PAGE FOR EVERY DAY</p><p className="diary-title">나의 다이어리<span className="diary-edition">{date.year} EDITION</span></p></div>
-      <div className="diary-toolbar-actions"><button className="quick-entry" type="button" disabled={navigationDisabled} onClick={() => captureInput.current?.focus()}>＋ 빠른 입력</button><button className="quiet-button" type="button" disabled={busy} onClick={() => void signOut()}>{demo ? "테스트 나가기" : "로그아웃 / 계정 바꾸기"}</button></div></div>
+      <div className="diary-toolbar-actions"><button className="quick-entry" type="button" disabled={navigationDisabled} onClick={() => captureInput.current?.focus()}>＋ 빠른 입력</button><button className="quiet-button" type="button" disabled={busy || journalState.busy} onClick={() => void signOut()}>{demo ? "테스트 나가기" : "로그아웃 / 계정 바꾸기"}</button></div></div>
     {demo && <aside className="demo-notice" aria-label="테스트 모드 안내"><strong>테스트 다이어리</strong><p className="demo-notice-detail">이 탭에 임시 저장됩니다. 새로고침 후에도 유지되며 다른 기기와 동기화되지 않습니다.</p></aside>}
     <div className="diary-shell">
       <aside id="diary-navigation" className={`diary-sidebar${calendarOpen ? " is-open" : ""}`} aria-label="다이어리 탐색">
@@ -201,6 +203,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
           <a href="#diary-inbox"><span>02</span>입력함<span aria-hidden="true">↗</span></a>
           <a href="#diary-completed"><span>03</span>완료 기록<span aria-hidden="true">↗</span></a>
           <a href="#diary-overdue"><span>04</span>미뤄둔 일<span aria-hidden="true">↗</span></a>
+          <a href="#diary-journal"><span>05</span>자유 기록<span aria-hidden="true">↗</span></a>
         </nav>
         <div className="diary-key"><p className="sidebar-label">작은 기록의 기호</p><div className="symbol-legend"><span>□ 진행 전</span><span>✓ 완료</span><span>→ 미룸</span><span>× 취소</span></div><p className="diary-quote">한 페이지씩,<br />나에게 중요한 하루를.</p></div>
       </aside>
@@ -226,20 +229,20 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
         <header className="diary-day-heading"><span className="diary-day-number">{String(date.day).padStart(2, "0")}</span><div><p className="diary-weekday">{["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"][date.dayOfWeek - 1]} · {date.month}월</p><h1>{isToday ? "오늘을 가볍게." : "하루를 차분하게."}</h1><p className="date-line">{date.toString()} · {session.timezone}</p></div></header>
         <p className="page-intention">모든 일을 끝내기보다, 중요한 일에 한 걸음.</p>
         <details className="task-symbol-guide"><summary>기호 안내</summary><div className="symbol-legend"><span>□ 진행 전</span><span>✓ 완료</span><span>→ 미룸</span><span>× 취소</span></div></details>
-        {taskSection(views[0])}
-        {taskSection(views[3])}
-        <p className="completion-note">완료한 일은 실제로 마친 날짜의 기록에 모입니다.</p>
-        <footer className="diary-page-footer"><span>DAILY PLAN</span><span className="page-number">{String(date.day * 2 - 1).padStart(2, "0")}</span></footer>
-      </div>
-      <div className="diary-page diary-page-right">
-        <header className="diary-capture-heading"><p className="eyebrow">CAPTURE & ORGANIZE</p><h2>생각을 한곳에.</h2><p>떠오르면 적고, 준비되면 하루에 놓아두세요.</p></header>
     <form className="capture" onSubmit={event => { event.preventDefault(); try { mutate("/api/tasks", "POST", { title: normalizeTitle(draft) }); } catch { setError("제목은 줄바꿈 없이 1~200자로 입력해주세요."); } }}>
       <label htmlFor="capture-title">지금 떠오른 일</label><div className="capture-row"><input ref={captureInput} id="capture-title" value={draft} disabled={navigationDisabled} aria-invalid={Boolean(draftError)} aria-describedby={draftError ? "capture-error" : "capture-help"} onChange={event => setDraft(event.target.value)} placeholder="제목 하나면 충분해요" autoComplete="off" />
         <button type="submit" disabled={navigationDisabled || !draft.trim() || Boolean(draftError)}>입력함에 저장</button></div><p id="capture-help" className="field-note">제목만 기록하세요. 우선순위는 하루 계획 목록에서 선택할 수 있어요.</p>{draftError && <p id="capture-error" role="alert" className="error-note">{draftError}</p>}</form>
 
+        {taskSection(views[0])}
         {taskSection(views[1])}
+        {taskSection(views[3])}
+        <p className="completion-note">완료한 일은 실제로 마친 날짜의 기록에 모입니다.</p>
         {taskSection(views[2])}
-        <footer className="diary-page-footer"><span>A LITTLE SPACE FOR YOU</span><span className="page-number">{String(date.day * 2).padStart(2, "0")}</span></footer>
+        <footer className="diary-page-footer"><span>DAILY PLAN</span><span className="page-number">{String(date.day * 2 - 1).padStart(2, "0")}</span></footer>
+      </div>
+      <div className="diary-page diary-page-right">
+        <JournalEditor date={date.toString()} ownerId={currentOwner.current} disabled={busy || Boolean(pending) || locked || Boolean(editing)} demo={demo} request={request} verifySession={verifySession} onStateChange={setJournalState} />
+        <footer className="diary-page-footer"><span>DAILY NOTES</span><span className="page-number">{String(date.day * 2).padStart(2, "0")}</span></footer>
       </div>
     </div>
     <details className="timezone-panel"><summary>기준 시간대 설정 · {session.timezone}</summary><form onSubmit={event => { event.preventDefault(); mutate("/api/settings", "PATCH", { timezone: zone }, session.settingsVersion); }}>

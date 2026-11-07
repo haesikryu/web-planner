@@ -12,6 +12,7 @@ import { csrfToken } from "../../src/server/auth/security";
 import { PATCH as settingsRoute } from "../../src/app/api/settings/route";
 import { GET as listTasksRoute, POST as createTaskRoute } from "../../src/app/api/tasks/route";
 import { GET as getTaskRoute, PATCH as patchTaskRoute } from "../../src/app/api/tasks/[taskId]/route";
+import { GET as getJournalRoute, PUT as putJournalRoute } from "../../src/app/api/journal/[date]/route";
 import { checked } from "../contract";
 import { today } from "../../src/domain/rules";
 
@@ -40,7 +41,7 @@ function request(path: string, method: string, body?: unknown, options: { actor?
   return new Request(`${config.baseUrl}${path}`, { method, headers: {
     cookie: id, origin: options.origin ?? config.baseUrl, "content-type": "application/json",
     "x-csrf-token": options.csrf ?? csrfToken(`session-${id}`, config.secret), "idempotency-key": options.key ?? randomUUID(),
-    ...(options.version ? { "if-match": `"v${options.version}"` } : {})
+    ...(options.version !== undefined ? { "if-match": `"v${options.version}"` } : {})
   }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 }
 beforeAll(async () => {
@@ -78,6 +79,142 @@ describe("account settings contract and replay", () => {
     expect((await settings(request("/api/settings", "PATCH", { timezone: "UTC" }, { version: 2, csrf: "wrong" }))).status).toBe(403);
     expect((await settings(request("/api/settings", "PATCH", { timezone: "UTC" }, { version: 2, actor: "anonymous" }))).status).toBe(401);
     expect((await db.select().from(schema.idempotencyRecords))).toHaveLength(2);
+  });
+});
+
+describe("daily journal API contract, ownership and concurrent writes", () => {
+  const date = "2026-11-07", otherDate = "2026-11-08";
+  const context = (value: string) => ({ params: Promise.resolve({ date: value }) });
+  const get = (value = date, options: Parameters<typeof request>[3] = {}) => checked(getJournalRoute(request(`/api/journal/${value}`, "GET", undefined, options), context(value)), "/api/journal/{date}", "get");
+  const put = (body: unknown, options: Parameters<typeof request>[3] = {}, value = date) => checked(putJournalRoute(request(`/api/journal/${value}`, "PUT", body, options), context(value)), "/api/journal/{date}", "put");
+  beforeEach(async () => { await db.delete(schema.journalEntries); await db.delete(schema.idempotencyRecords); });
+
+  it("reads an empty day without creating a row and keeps first empty saves at version zero", async () => {
+    const blank = { date, content: "", version: 0, updatedAt: null };
+    const read = await get(); expect(read.status).toBe(200); expect(read.headers.get("etag")).toBe('"v0"');
+    expect(await read.json()).toEqual(blank);
+    const key = randomUUID();
+    expect(await (await put({ content: "" }, { key, version: 0 })).json()).toEqual(blank);
+    expect(await db.select().from(schema.journalEntries)).toHaveLength(0);
+    expect(await (await put({ content: "first" }, { version: 0 })).json()).toMatchObject({ content: "first", version: 1, updatedAt: expect.any(String) });
+    expect(await (await put({ content: "" }, { key, version: 0 })).json()).toEqual(blank);
+    expect(await (await get()).json()).toMatchObject({ content: "first", version: 1 });
+  });
+  it("preserves whitespace and Unicode while normalizing CRLF, replaying and clearing content", async () => {
+    const key = randomUUID(), content = "  e\u0301\n한글 😀\r끝 \n";
+    const first = await put({ content: "  e\u0301\r\n한글 😀\r끝 \r\n" }, { key, version: 0 });
+    expect(first.status).toBe(200); const body = await first.json();
+    expect(body).toEqual({ date, content, version: 1, updatedAt: expect.any(String) });
+    expect(await (await put({ content }, { key, version: 0 })).json()).toEqual(body);
+    expect(await (await put({ content }, { version: 1 })).json()).toEqual(body);
+    const cleared = await put({ content: "" }, { version: 1 });
+    expect(await cleared.json()).toMatchObject({ date, content: "", version: 2, updatedAt: expect.any(String) });
+    expect(await (await get()).json()).toMatchObject({ content: "", version: 2 });
+    expect(await db.select().from(schema.journalEntries)).toHaveLength(1);
+  });
+  it("keeps owners and dates separate without leaking another person's text", async () => {
+    const key = randomUUID();
+    expect((await put({ content: "alice private" }, { key, version: 0 })).status).toBe(200);
+    expect(await (await get(date, { actor: bob })).json()).toEqual({ date, content: "", version: 0, updatedAt: null });
+    expect((await put({ content: "bob private" }, { actor: bob, key, version: 0 })).status).toBe(200);
+    expect((await put({ content: "other day" }, { key, version: 0 }, otherDate)).status).toBe(200);
+    expect(await (await get()).json()).toMatchObject({ content: "alice private", version: 1 });
+    expect(await (await get(date, { actor: bob })).json()).toMatchObject({ content: "bob private", version: 1 });
+    expect(await (await get(otherDate)).json()).toMatchObject({ content: "other day", version: 1 });
+    expect((await put({ content: "stolen", ownerId: bob }, { version: 1 })).status).toBe(422);
+    expect((await get(date, { actor: "anonymous" })).status).toBe(401);
+    expect((await put({ content: "anonymous" }, { actor: "anonymous", version: 0 })).status).toBe(401);
+  });
+  it("rejects invalid bodies, dates, CSRF, Origin and version headers without consuming keys", async () => {
+    const key = randomUUID();
+    for (const body of [{}, { content: null }, { content: 42 }, [], { content: "bad\0text" }, { content: "x".repeat(10001) }, { content: "valid", extra: true }]) {
+      expect((await put(body, { key, version: 0 })).status).toBe(422);
+    }
+    for (const invalidDate of ["0000-01-01", "2026-02-30", "2026-1-01", "10000-01-01"]) {
+      expect((await get(invalidDate)).status).toBe(422);
+      expect((await put({ content: "valid" }, { key, version: 0 }, invalidDate)).status).toBe(422);
+    }
+    expect((await put({ content: "valid" }, { key })).status).toBe(428);
+    for (const headers of [{ csrf: "bad" }, { origin: "https://other.example" }, { origin: "" }]) {
+      expect((await put({ content: "valid" }, { key, version: 0, ...headers })).status).toBe(403);
+    }
+    for (const header of ['"v00"', 'W/"v0"', '"v-1"', '"v2147483647"', '*']) {
+      const invalid = request(`/api/journal/${date}`, "PUT", { content: "valid" }, { key, version: 0 }); invalid.headers.set("if-match", header);
+      expect((await checked(putJournalRoute(invalid, context(date)), "/api/journal/{date}", "put")).status).toBe(422);
+    }
+    expect(await db.select().from(schema.journalEntries)).toHaveLength(0);
+    expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(0);
+    expect((await put({ content: "valid" }, { key, version: 0 })).status).toBe(200);
+  });
+  it("accepts 10000 Unicode code points with a journal-only bounded request size", async () => {
+    const content = "😀".repeat(10000);
+    expect(await (await put({ content }, { version: 0 })).json()).toMatchObject({ content, version: 1 });
+    expect((await put({ content: `${content}x` }, { version: 1 })).status).toBe(422);
+    expect(await (await put({ content: "\r\n".repeat(10000) }, { version: 1 })).json()).toMatchObject({ content: "\n".repeat(10000), version: 2 });
+    const oversized = new Request(`${config.baseUrl}/api/journal/${date}`, {
+      method: "PUT", headers: request(`/api/journal/${date}`, "PUT", undefined, { version: 2 }).headers,
+      body: JSON.stringify({ content: "ok" }) + " ".repeat(65536)
+    });
+    expect((await checked(putJournalRoute(oversized, context(date)), "/api/journal/{date}", "put")).status).toBe(422);
+    expect(await (await get()).json()).toMatchObject({ content: "\n".repeat(10000), version: 2 });
+  });
+  it("uses replay before version checks and preserves journal content on stale or reused requests", async () => {
+    const key = randomUUID();
+    const first = await (await put({ content: "one" }, { key, version: 0 })).json();
+    expect((await put({ content: "different" }, { key, version: 0 })).status).toBe(409);
+    expect((await put({ content: "one" }, { key, version: 1 })).status).toBe(409);
+    expect((await put({ content: "two" }, { version: 0 })).status).toBe(412);
+    expect((await put({ content: "two" }, { version: 1 })).status).toBe(200);
+    expect(await (await put({ content: "one" }, { key, version: 0 })).json()).toEqual(first);
+    await db.update(schema.idempotencyRecords).set({ expiresAt: new Date(Date.now() - 1) }).where(eq(schema.idempotencyRecords.key, key));
+    expect((await put({ content: "one" }, { key, version: 0 })).status).toBe(412);
+    expect(await (await get()).json()).toMatchObject({ content: "two", version: 2 });
+    expect((await put({ content: "three" }, { key, version: 2 })).status).toBe(200);
+    expect(await (await get()).json()).toMatchObject({ content: "three", version: 3 });
+  });
+  it("serializes first writes and updates so only one matching version wins", async () => {
+    const first = await Promise.all([put({ content: "first writer" }, { version: 0 }), put({ content: "second writer" }, { version: 0 })]);
+    expect(first.map(item => item.status).sort()).toEqual([200, 412]);
+    const changed = await Promise.all([put({ content: "next writer" }, { version: 1 }), put({ content: "another writer" }, { version: 1 })]);
+    expect(changed.map(item => item.status).sort()).toEqual([200, 412]);
+    expect(await db.select().from(schema.journalEntries)).toHaveLength(1);
+    expect(await (await get()).json()).toMatchObject({ version: 2 });
+  });
+  it("replays identical simultaneous first saves without creating another version", async () => {
+    const key = randomUUID();
+    const responses = await Promise.all([put({ content: "same" }, { key, version: 0 }), put({ content: "same" }, { key, version: 0 })]);
+    expect(responses.some(item => item.status === 200)).toBe(true);
+    for (const item of responses) expect([200, 409]).toContain(item.status);
+    expect(await (await put({ content: "same" }, { key, version: 0 })).json()).toMatchObject({ content: "same", version: 1 });
+    expect(await db.select().from(schema.journalEntries)).toHaveLength(1);
+  });
+  it("rolls back the journal and replay key when saving the response fails", async () => {
+    await db.execute(sql`CREATE FUNCTION reject_journal_response() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-journal-fault'; END $$`);
+    await db.execute(sql`CREATE TRIGGER journal_response_failure BEFORE UPDATE ON idempotency_records FOR EACH ROW EXECUTE FUNCTION reject_journal_response()`);
+    const key = randomUUID();
+    try {
+      const failed = await put({ content: "must roll back" }, { key, version: 0 });
+      expect(failed.status).toBe(500); expect(JSON.stringify(await failed.json())).not.toContain("synthetic-journal-fault");
+      expect(await db.select().from(schema.journalEntries)).toHaveLength(0);
+      expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(0);
+    } finally {
+      await db.execute(sql`DROP TRIGGER journal_response_failure ON idempotency_records`);
+      await db.execute(sql`DROP FUNCTION reject_journal_response()`);
+    }
+    expect((await put({ content: "must roll back" }, { key, version: 0 })).status).toBe(200);
+  });
+  it.skipIf(!pool)("returns a retryable response while another connection holds the date lock", async () => {
+    const client = await (pool as Pool).connect(), key = randomUUID();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [JSON.stringify(["journal", alice, date])]);
+      const response = await put({ content: "wait for date" }, { key, version: 0 });
+      expect(response.status).toBe(409); expect(response.headers.get("retry-after")).toBe("1");
+      expect((await response.json()).code).toBe("REQUEST_IN_PROGRESS");
+      expect(await db.select().from(schema.journalEntries)).toHaveLength(0);
+      expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(0);
+    } finally { await client.query("ROLLBACK"); client.release(); }
+    expect((await put({ content: "wait for date" }, { key, version: 0 })).status).toBe(200);
   });
 });
 

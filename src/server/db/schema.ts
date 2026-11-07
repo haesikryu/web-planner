@@ -53,6 +53,14 @@ export const taskActivities = pgTable("task_activities", {
   check("activity_invalidation", sql`${t.invalidatedBy} IS NULL OR (${t.type} = 'completed' AND ${t.invalidatedBy} <> ${t.id})`),
   uniqueIndex("activity_active_completion_unique").on(t.taskId).where(sql`${t.type} = 'completed' AND ${t.invalidatedBy} IS NULL`),
   index("activity_task_idx").on(t.taskId, t.occurredAt)]);
+export const journalEntries = pgTable("journal_entries", {
+  ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  date: date("entry_date").notNull(), content: text("content").notNull(),
+  version: integer("version").notNull().default(1), updatedAt: instant("updated_at").notNull().defaultNow()
+}, t => [primaryKey({ columns: [t.ownerId, t.date] }),
+  check("journal_content", sql`char_length(${t.content}) <= 10000 AND ${t.content} !~ E'\\r\\n'`),
+  check("journal_version", sql`${t.version} > 0`),
+  check("journal_date", sql`${t.date} BETWEEN DATE '0001-01-01' AND DATE '9999-12-31'`)]);
 export const idempotencyRecords = pgTable("idempotency_records", {
   ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   method: text("method").notNull(), path: text("path").notNull(), key: text("key").notNull(),

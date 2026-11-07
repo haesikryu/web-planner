@@ -43,14 +43,20 @@ for path, methods in CONTRACT['paths'].items():
         if path != '/api/logout':
             check(operation.get('security', CONTRACT.get('security')) == [{'SessionCookie': []}],
                   'Missing session requirement: ' + path)
-        if method in ('post', 'patch') and path != '/api/logout':
+        if method in ('post', 'patch', 'put') and path != '/api/logout':
             params = {p.get('$ref', '') for p in operation.get('parameters', [])}
             check('#/components/parameters/CSRF' in params, 'Missing CSRF: ' + path)
             check('#/components/parameters/IdempotencyKey' in params, 'Missing key: ' + path)
-        if method == 'patch':
-            check('#/components/parameters/IfMatch' in params, 'Missing If-Match: ' + path)
+        if method in ('patch', 'put'):
+            version_parameter = 'JournalIfMatch' if path == '/api/journal/{date}' else 'IfMatch'
+            check('#/components/parameters/' + version_parameter in params, 'Missing If-Match: ' + path)
             check('412' in operation['responses'] and '428' in operation['responses'],
                   'Missing version errors: ' + path)
+        if path == '/api/journal/{date}' and method == 'put':
+            check('#/components/parameters/Origin' in params, 'Missing Origin: ' + path)
+            pattern = CONTRACT['components']['parameters']['JournalIfMatch']['schema']['pattern']
+            check(bool(re.fullmatch(pattern, '"v0"')) and not re.fullmatch(pattern, '"v00"'),
+                  'Journal If-Match must allow only canonical zero version')
 check(len(operations) == len(set(operations)), 'Duplicate operationId')
 
 feature = (ROOT / 'specs/001-capture-complete/acceptance.feature').read_text()

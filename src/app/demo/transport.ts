@@ -1,8 +1,10 @@
+import { type JournalEntry, journalContent } from "../../domain/journal";
 import { calendarDate, dayRange, InputError, object, title, timezone, today, uuidPattern } from "../../domain/rules";
 import { type TaskKind, type TaskPriority, type TaskStatus, taskKind, taskPriority, taskStatus } from "../../domain/task-options";
 import type { PlannerSession } from "../planner";
 
 const STORAGE_KEY = "web-planner:demo:v1";
+const REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 type DemoTask = {
   id: string;
   title: string;
@@ -16,7 +18,8 @@ type DemoTask = {
   updatedAt: string;
   completedAt: string | null;
 };
-type DemoState = { schemaVersion: 2; timezone: string; settingsVersion: number; tasks: DemoTask[] };
+type JournalRequest = { key: string; date: string; content: string; version: number; expiresAt: string; response: JournalEntry };
+type DemoState = { schemaVersion: 3; timezone: string; settingsVersion: number; tasks: DemoTask[]; journals: JournalEntry[]; journalRequests: JournalRequest[] };
 type DemoStorage = Pick<Storage, "getItem" | "setItem">;
 
 class DemoRequestError extends Error {
@@ -33,12 +36,17 @@ function timestamp(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 }
 
+function validJournal(entry: JournalEntry, allowEmpty = false): boolean {
+  return calendarDate(entry.date) === entry.date && journalContent(entry.content) === entry.content &&
+    (allowEmpty && entry.version === 0 ? entry.content === "" && entry.updatedAt === null : positiveInteger(entry.version) && timestamp(entry.updatedAt));
+}
+
 function readState(storage: DemoStorage): DemoState {
   const stored = storage.getItem(STORAGE_KEY);
-  if (stored === null) return { schemaVersion: 2, timezone: "Asia/Seoul", settingsVersion: 1, tasks: [] };
+  if (stored === null) return { schemaVersion: 3, timezone: "Asia/Seoul", settingsVersion: 1, tasks: [], journals: [], journalRequests: [] };
   try {
-    const state = JSON.parse(stored) as Omit<DemoState, "schemaVersion"> & { schemaVersion: 1 | 2 };
-    if (![1, 2].includes(state.schemaVersion) || !positiveInteger(state.settingsVersion) || timezone(state.timezone) !== state.timezone || !Array.isArray(state.tasks)) throw new Error();
+    const state = JSON.parse(stored) as Omit<DemoState, "schemaVersion"> & { schemaVersion: 1 | 2 | 3 };
+    if (![1, 2, 3].includes(state.schemaVersion) || !positiveInteger(state.settingsVersion) || timezone(state.timezone) !== state.timezone || !Array.isArray(state.tasks)) throw new Error();
     const ids = new Set<string>();
     for (const task of state.tasks) {
       // Adapt old entries in memory; persist only with the next successful mutation.
@@ -51,7 +59,27 @@ function readState(storage: DemoStorage): DemoState {
           (task.status === "completed" ? !timestamp(task.completedAt) : task.completedAt !== null)) throw new Error();
       ids.add(task.id);
     }
-    return { ...state, schemaVersion: 2 };
+    if (state.schemaVersion < 3) {
+      state.journals = [];
+      state.journalRequests = [];
+    }
+    if (!Array.isArray(state.journals) || !Array.isArray(state.journalRequests)) throw new Error();
+    const dates = new Set<string>();
+    for (const entry of state.journals) {
+      if (!validJournal(entry) || dates.has(entry.date)) throw new Error();
+      dates.add(entry.date);
+    }
+    const requestKeys = new Set<string>();
+    for (const saved of state.journalRequests) {
+      const scope = `${saved.date}:${saved.key}`;
+      if (!uuidPattern.test(saved.key) || saved.key !== saved.key.toLowerCase() || requestKeys.has(scope) ||
+          calendarDate(saved.date) !== saved.date || journalContent(saved.content) !== saved.content ||
+          !Number.isSafeInteger(saved.version) || saved.version < 0 || !timestamp(saved.expiresAt) ||
+          !validJournal(saved.response, true) || saved.response.date !== saved.date || saved.response.content !== saved.content ||
+          saved.response.version < saved.version || saved.response.version > saved.version + 1) throw new Error();
+      requestKeys.add(scope);
+    }
+    return { ...state, schemaVersion: 3 };
   } catch {
     throw new Error("브라우저의 테스트 저장 데이터가 손상되어 불러올 수 없습니다.");
   }
@@ -75,11 +103,17 @@ function body(init: RequestInit, fields: readonly string[]): Record<string, unkn
   return object(parsed, fields);
 }
 
-function checkVersion(init: RequestInit, current: number) {
+function requestVersion(init: RequestInit, allowZero = false): number {
   const value = new Headers(init.headers).get("If-Match");
   if (!value) throw new DemoRequestError(428, "PRECONDITION_REQUIRED", "항목 버전이 필요합니다.");
-  if (!/^"v[1-9]\d*"$/u.test(value)) throw new InputError("version");
-  if (value !== `"v${current}"`) throw new DemoRequestError(412, "VERSION_CONFLICT", "항목이 변경되었습니다. 최신 내용을 확인해주세요.");
+  if (!(allowZero ? /^"v(?:0|[1-9]\d*)"$/u : /^"v[1-9]\d*"$/u).test(value)) throw new InputError("version");
+  const version = Number(value.slice(2, -1));
+  if (!Number.isSafeInteger(version) || version > 2147483646) throw new InputError("version");
+  return version;
+}
+
+function checkVersion(init: RequestInit, current: number) {
+  if (requestVersion(init) !== current) throw new DemoRequestError(412, "VERSION_CONFLICT", "항목이 변경되었습니다. 최신 내용을 확인해주세요.");
 }
 
 function listTasks(state: DemoState, params: URLSearchParams, now: Date) {
@@ -115,6 +149,35 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
       const instant = now();
       if (method === "GET" && url.pathname === "/api/session") return json(session(state, instant));
       if (method === "POST" && url.pathname === "/api/logout") return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+      const journalMatch = /^\/api\/journal\/([^/]+)$/u.exec(url.pathname);
+      if (journalMatch && ["GET", "PUT"].includes(method)) {
+        const date = calendarDate(journalMatch[1]);
+        const current = state.journals.find(entry => entry.date === date) ?? { date, content: "", version: 0, updatedAt: null };
+        if (method === "GET") return json(current, 200, current.version);
+        const headers = new Headers(init.headers);
+        if (headers.get("X-CSRF-Token") !== "demo-browser-only") throw new DemoRequestError(403, "FORBIDDEN", "요청을 다시 확인해주세요.");
+        const suppliedKey = headers.get("Idempotency-Key");
+        if (!suppliedKey || !uuidPattern.test(suppliedKey)) throw new InputError("Idempotency-Key");
+        const key = suppliedKey.toLowerCase();
+        const version = requestVersion(init, true);
+        if (headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "application/json" ||
+            typeof init.body !== "string" || new TextEncoder().encode(init.body).byteLength > 65536) throw new InputError("body");
+        const content = journalContent(body(init, ["content"]).content);
+        const activeRequests = state.journalRequests.filter(saved => Date.parse(saved.expiresAt) > instant.getTime());
+        const saved = activeRequests.find(item => item.date === date && item.key === key);
+        if (saved) {
+          if (saved.content !== content || saved.version !== version) throw new DemoRequestError(409, "IDEMPOTENCY_KEY_REUSED", "다른 내용에 사용한 요청 키입니다.");
+          return json(saved.response, 200, saved.response.version);
+        }
+        if (current.version !== version) throw new DemoRequestError(412, "VERSION_CONFLICT", "글이 변경되었습니다. 최신 내용을 확인해주세요.");
+        const next: JournalEntry = content === current.content ? current : { date, content, version: current.version + 1, updatedAt: instant.toISOString() };
+        if (next !== current) {
+          state.journals = [...state.journals.filter(entry => entry.date !== date), next];
+        }
+        state.journalRequests = [...activeRequests, { key, date, content, version, response: next, expiresAt: new Date(instant.getTime() + REQUEST_TTL_MS).toISOString() }];
+        storage.setItem(STORAGE_KEY, JSON.stringify(state));
+        return json(next, 200, next.version);
+      }
       if (method === "GET" && url.pathname === "/api/tasks") return json(listTasks(state, url.searchParams, instant));
       if (method === "POST" && url.pathname === "/api/tasks") {
         const input = body(init, ["title", "scheduledDate", "priority", "kind"]);

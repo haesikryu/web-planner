@@ -90,9 +90,22 @@ body:has(.diary-app) .site-footer { max-width: 1408px; }
 .diary-day-heading h1 { font-size: 24px; letter-spacing: -1px; line-height: 1.4; }
 .date-line { color: #67735f; font-size: 10px; margin: 9px 0 0; overflow-wrap: anywhere; }
 .page-intention { margin: 0 0 30px; padding-top: 16px; border-top: 1px solid #d8decd; font-size: 11px; color: #697460; line-height: 1.8; word-break: keep-all; }
-.diary-capture-heading { padding-top: 14px; margin-bottom: 25px; }
-.diary-capture-heading h2 { font-size: 24px; font-weight: 600; margin-bottom: 13px; letter-spacing: -1px; }
-.diary-capture-heading > p:last-child { font-size: 11px; color: #67735f; line-height: 1.8; }
+.journal-section { flex: 1; display: flex; flex-direction: column; min-width: 0; scroll-margin-top: 24px; }
+.journal-heading { padding-top: 14px; margin-bottom: 25px; }
+.journal-heading h2 { font-size: 24px; font-weight: 600; margin-bottom: 13px; letter-spacing: -1px; }
+.journal-heading > p:last-child { font-size: 11px; color: #59664f; line-height: 1.8; }
+.journal-form { flex: 1; display: flex; flex-direction: column; }
+.journal-form label { font-size: 12px; font-weight: 600; margin-bottom: 14px; }
+.journal-form textarea { flex: 1; display: block; width: 100%; min-height: 540px; resize: vertical; border: 1px solid #d4dbc9; border-radius: 4px; padding: 8px 14px; background: repeating-linear-gradient(#fffdf5 0, #fffdf5 31px, #e0e5d7 31px, #e0e5d7 32px); color: var(--ink); font: 15px/32px Arial, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; overflow-wrap: anywhere; }
+.journal-form textarea::placeholder { color: #66715f; }
+.journal-form textarea:disabled { opacity: .65; }
+.journal-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; }
+.journal-count, .journal-save-status { font-size: 11px; color: #52614c; line-height: 1.8; }
+.journal-actions button { background: #3b513e; border-color: #3b513e; color: white; }
+.journal-actions button:hover:not(:disabled) { background: #29402e; }
+.journal-recovery { padding: 14px; margin-top: 12px; background: #fff9ed; border: 1px solid #d6b78b; border-radius: 4px; font-size: 12px; line-height: 1.8; }
+.journal-recovery button { margin: 6px 6px 0 0; }
+.journal-recovery pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .capture { padding: 16px; margin-bottom: 30px; background: #f0f2e8; border: 1px solid #dbe2cf; border-radius: 4px; }
 .capture label { font-size: 12px; font-weight: 600; display: block; margin-bottom: 10px; }
 .capture-row { display: flex; flex-direction: column; gap: 8px; }

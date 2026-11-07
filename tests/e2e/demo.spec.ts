@@ -154,6 +154,8 @@ test("title-only capture and daily-list priority persist through status changes 
   await editor.getByLabel("제목", { exact: true }).fill("보존할 미저장 편집 제목");
   await expect(page.getByRole("button", { name: "＋ 빠른 입력", exact: true })).toBeDisabled();
   await expect(page.getByLabel("지금 떠오른 일")).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "자유롭게 쓰는 글", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "글 저장", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "입력함에 저장", exact: true })).toBeDisabled();
   await expect(otherCard.getByLabel("편집 중 보호할 다른 일 우선순위", { exact: true })).toBeDisabled();
   await expect(otherCard.getByLabel("편집 중 보호할 다른 일 상태", { exact: true })).toBeDisabled();
@@ -248,4 +250,55 @@ test("legacy appointment data uses the common status symbol and survives title e
     const state = JSON.parse(sessionStorage.getItem("web-planner:demo:v1") ?? "null");
     return { kind: state.tasks[0].kind, priority: state.tasks[0].priority, title: state.tasks[0].title };
   })).toEqual({ kind: "appointment", priority: "high", title: "제목을 고친 이전 기록" });
+});
+
+
+test("left-page tasks and right-page journal preserve separate dated entries and unsaved drafts", async ({ page }) => {
+  await page.goto("/demo");
+  await expect(page.getByRole("status")).toHaveText("이 탭에 저장된 테스트 목록입니다.", { timeout: 15000 });
+  const left = page.locator(".diary-page-left"), right = page.locator(".diary-page-right");
+  await expect(left.getByLabel("지금 떠오른 일")).toBeVisible();
+  for (const name of ["오늘의 할 일", "오늘 완료", "입력함", "이전 날짜의 미완료"]) {
+    await expect(left.getByRole("region", { name, exact: true })).toBeVisible();
+    await expect(right.getByRole("region", { name, exact: true })).toHaveCount(0);
+  }
+  const journal = right.getByRole("region", { name: "자유 기록", exact: true });
+  const writing = journal.getByRole("textbox", { name: "자유롭게 쓰는 글", exact: true });
+  const save = journal.getByRole("button", { name: "글 저장", exact: true });
+  await expect(writing).toBeEnabled();
+  await expect(writing).toHaveValue("");
+  await expect(save).toBeDisabled();
+  await expect(left.getByRole("region", { name: "자유 기록", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("status")).toHaveCount(1);
+  const today = (await page.locator(".date-line").textContent() ?? "").slice(0, 10);
+  const tomorrow = Temporal.PlainDate.from(today).add({ days: 1 }).toString();
+  const firstEntry = "  오늘의 생각  \n\n두 번째 문단에는  여백을 남깁니다.\n";
+  const secondEntry = "내일의 메모\n  다른 날짜의 글  ";
+  await writing.fill(firstEntry);
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.getByRole("button", { name: "테스트 나가기", exact: true }).click();
+  await expect(writing).toHaveValue(firstEntry);
+  await page.getByRole("button", { name: "다음 날", exact: true }).click();
+  await expect(page.locator(".date-line")).toContainText(tomorrow);
+  await expect(writing).toBeEnabled();
+  await expect(writing).toHaveValue("");
+  await writing.fill(secondEntry);
+  await page.getByRole("button", { name: "이전 날", exact: true }).click();
+  await expect(page.locator(".date-line")).toContainText(today);
+  await expect(writing).toHaveValue(firstEntry);
+  await save.click();
+  await expect(journal.locator(".journal-save-status")).toHaveText("글을 저장했습니다.");
+  await expect(save).toBeDisabled();
+  await page.getByRole("button", { name: "다음 날", exact: true }).click();
+  await expect(writing).toHaveValue(secondEntry);
+  await save.click();
+  await expect(journal.locator(".journal-save-status")).toHaveText("글을 저장했습니다.");
+  await expect(save).toBeDisabled();
+  await page.reload();
+  await expect(page.locator(".date-line")).toContainText(today);
+  await expect(writing).toHaveValue(firstEntry);
+  await page.getByRole("button", { name: "다음 날", exact: true }).click();
+  await expect(writing).toHaveValue(secondEntry);
+  await expect(save).toBeDisabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
