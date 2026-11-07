@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-export function SignIn({ enabled }: { enabled: boolean }) {
+export function SignIn({ enabled, paused = false }: { enabled: boolean; paused?: boolean }) {
   const [signedIn, setSignedIn] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(enabled ? "Google 계정으로 안전하게 시작하세요." : "로그인은 준비 중입니다.");
@@ -41,6 +41,6 @@ export function SignIn({ enabled }: { enabled: boolean }) {
       <span className="google-letter" aria-hidden="true">G</span>
       {signedIn ? "로그아웃 / 계정 바꾸기" : "Google로 시작하기"}
     </button>
-    <p id="sign-in-status" role="status">{message}</p>
+    <p id="sign-in-status" role="status">{paused ? "로그인이 일시 중지되었습니다." : message}</p>
   </div>;
 }

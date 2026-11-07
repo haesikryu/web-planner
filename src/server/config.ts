@@ -14,6 +14,10 @@ export class ConfigurationError extends Error {
   }
 }
 
+export function isLoginEnabled(env: Readonly<Record<string, string | undefined>>): boolean {
+  return env.AUTH_LOGIN_ENABLED !== "false";
+}
+
 export function readAuthConfiguration(
   env: Readonly<Record<string, string | undefined>>,
   production: boolean

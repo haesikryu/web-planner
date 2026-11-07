@@ -1,6 +1,7 @@
 import { getAuthRuntime } from "@/server/auth/runtime";
 import { apiError, validOrigin } from "@/server/auth/security";
 import { timezone } from "@/domain/rules";
+import { isLoginEnabled } from "@/server/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +12,9 @@ async function handle(request: Request) {
   if (!(request.method === "POST" && path === "/api/auth/sign-in/social") &&
       !(request.method === "GET" && path === "/api/auth/callback/google")) {
     return apiError(404, "NOT_FOUND", "요청한 경로가 없습니다.");
+  }
+  if (!isLoginEnabled(process.env)) {
+    return apiError(503, "AUTH_UNAVAILABLE", "로그인이 일시 중지되었습니다.");
   }
   try {
     const { auth, config } = getAuthRuntime();

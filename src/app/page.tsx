@@ -1,4 +1,4 @@
-import { readAuthConfiguration } from "@/server/config";
+import { isLoginEnabled, readAuthConfiguration } from "@/server/config";
 import { SignIn } from "./sign-in";
 import { headers } from "next/headers";
 import { resolveSession } from "@/server/auth/session";
@@ -8,6 +8,7 @@ import { Planner, type PlannerSession } from "./planner";
 
 export const dynamic = "force-dynamic";
 export default async function Home() {
+  const loginPaused = !isLoginEnabled(process.env);
   let authReady = false;
   let initialSession: PlannerSession | null = null;
   try {
@@ -33,7 +34,7 @@ export default async function Home() {
           <p className="eyebrow">A LITTLE SPACE FOR WHAT MATTERS</p>
           <h1 id="page-title">나의 하루를,<br /><span>중요한 일부터.</span></h1>
           <p className="lead">해야 할 일 사이에서, 하고 싶은 삶을 잊지 않도록.<br className="desktop-break" /> 계획과 기록, 돌아보는 시간을 한곳에 담으세요.</p>
-          <SignIn enabled={authReady} />
+          <SignIn enabled={authReady && !loginPaused} paused={loginPaused} />
         </section>
         <section className="principles" aria-label="플래너가 지향하는 세 가지 습관">
           <div className="paper-heading"><span>나를 위한 작은 습관</span><span aria-hidden="true">↗</span></div>

@@ -31,6 +31,27 @@ beforeAll(async () => {
 afterAll(async () => { vi.unstubAllGlobals(); await pg.close(); });
 
 describe("PostgreSQL schema and adapter integration (PGlite)", () => {
+  it("blocks login initiation and callbacks while login is paused", async () => {
+    const sessionsBefore = await db.select().from(schema.session);
+    const statesBefore = await db.select().from(schema.verification);
+    vi.stubEnv("AUTH_LOGIN_ENABLED", "false");
+    try {
+      const requests = [
+        new Request(`${config.baseUrl}/api/auth/sign-in/social`, { method: "POST", headers: { origin: config.baseUrl, "content-type": "application/json" }, body: JSON.stringify({ provider: "google" }) }),
+        new Request(`${config.baseUrl}/api/auth/callback/google?code=synthetic&state=synthetic`)
+      ];
+      for (const request of requests) {
+        const response = await (request.method === "POST" ? startLogin : callback)(request);
+        expect(response.status).toBe(503);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("location")).toBeNull();
+        expect(response.headers.getSetCookie()).toHaveLength(0);
+        expect(await response.json()).toMatchObject({ code: "AUTH_UNAVAILABLE", message: "로그인이 일시 중지되었습니다." });
+      }
+      expect(await db.select().from(schema.session)).toEqual(sessionsBefore);
+      expect(await db.select().from(schema.verification)).toEqual(statesBefore);
+    } finally { vi.unstubAllEnvs(); }
+  });
   it("keeps new sign-ups closed until an explicit environment policy is configured", () => {
     const closed = createPlannerAuth(config, drizzleAdapter(db, { provider: "pg", schema, transaction: true }));
     expect(closed.options.socialProviders?.google).toMatchObject({ disableSignUp: true });

@@ -69,4 +69,6 @@ API 응답은 OpenAPI JSON Schema로 검사하며 `npm run db:prune`은 만료�
 
 ## 본인 전용 베타
 
+테스트 중 Google 로그인을 잠시 중지하려면 `.env.local`에 `AUTH_LOGIN_ENABLED=false`를 설정한다. 버튼에 일시 중지 안내가 표시되고 로그인 시작·Google 콜백이 503으로 차단된다. 재개하려면 `true`로 바꾸고 서버를 재시작한다. 이 설정은 새 로그인 발급을 제어하며 기존 세션은 세션 만료·로그아웃 정책을 따른다.
+
 [Google OAuth 생성·로컬 설정](google-oauth-local-setup.md)을 따른다. `AUTH_ALLOWED_EMAILS` 누락 시 인증이 비활성화된다. 실제 허용 이메일·OAuth 비밀은 무시되는 `.env.local`에만 저장한다.
