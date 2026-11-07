@@ -3,6 +3,7 @@ export type AuthConfiguration = Readonly<{
   baseUrl: string;
   databaseUrl: string;
   secret: string;
+  allowedEmails: readonly string[];
   google: Readonly<{ clientId: string; clientSecret: string }>;
 }>;
 
@@ -11,6 +12,10 @@ export class ConfigurationError extends Error {
     super(`Invalid server configuration: ${fields.join(", ")}`);
     this.name = "ConfigurationError";
   }
+}
+
+export function isLoginEnabled(env: Readonly<Record<string, string | undefined>>): boolean {
+  return env.AUTH_LOGIN_ENABLED !== "false";
 }
 
 export function readAuthConfiguration(
@@ -35,11 +40,14 @@ export function readAuthConfiguration(
     if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname) invalid.add("DATABASE_URL");
   } catch { invalid.add("DATABASE_URL"); }
   if (Buffer.byteLength(values.BETTER_AUTH_SECRET, "utf8") < 32) invalid.add("BETTER_AUTH_SECRET");
+  const allowedEmails = [...new Set((env.AUTH_ALLOWED_EMAILS ?? "").split(",").map(value => value.trim().toLowerCase()))];
+  if (!allowedEmails.length || allowedEmails.some(value => !/^[^\s@*,]+@[^\s@*,]+\.[^\s@*,]+$/.test(value))) invalid.add("AUTH_ALLOWED_EMAILS");
   if (invalid.size) throw new ConfigurationError([...invalid]);
   return {
     baseUrl,
     databaseUrl: values.DATABASE_URL,
     secret: values.BETTER_AUTH_SECRET,
+    allowedEmails,
     google: { clientId: values.GOOGLE_CLIENT_ID, clientSecret: values.GOOGLE_CLIENT_SECRET }
   };
 }

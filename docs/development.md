@@ -46,10 +46,29 @@ npm run db:stop
 
 `src/server/config.ts`는 누락 값, 짧은 비밀, 잘못된 DB 프로토콜, 외부 HTTP·인증정보·경로가 포함된 인증 origin을 거부한다. 오류에는 항목명만 포함하며 값은 출력하지 않는다. 이 경계의 통과가 인증 서버 구현이나 동작 검증을 뜻하지 않는다.
 
-Google Cloud에서 웹 애플리케이션 OAuth 클라이언트를 만들고 위 콜백을 정확히 등록한다. 테스트 공개 상태에서는 허용한 테스트 사용자로 확인한다. 비밀값은 채팅·PR·Drive 문서로 보내지 않고 무시되는 로컬 환경 파일이나 배포 비밀 저장소에 직접 입력한다. 신규 가입은 `AUTH_ALLOW_SIGN_UP=false`가 기본이며 D-01 대상 사용자 결정 후 해당 환경에서 명시적으로 허용한다. 기본 사용자는 UTC로 생성하며 시간대 제안·변경은 후속 T-005에서 구현한다.
+Google Cloud에서 웹 애플리케이션 OAuth 클라이언트를 만들고 위 콜백을 정확히 등록한다. 테스트 공개 상태에서는 허용한 테스트 사용자로 확인한다. 비밀값은 채팅·PR·Drive 문서로 보내지 않고 무시되는 로컬 환경 파일이나 배포 비밀 저장소에 직접 입력한다. 신규 가입은 `AUTH_ALLOW_SIGN_UP=false`가 기본이며 D-01 대상 사용자 결정 후 해당 환경에서 명시적으로 허용한다. 신규 계정에는 검증된 기기 시간대를 제안하고 없으면 UTC다. 기존 계정의 시간대는 재로그인 때 바꾸지 않는다.
 
-공개 인증 경로는 POST `/api/auth/sign-in/social`, GET `/api/auth/callback/google`뿐이다. 제품 경로는 GET `/api/session`, POST `/api/logout`이며 세션 응답에서 얻은 X-CSRF-Token과 정확한 Origin이 로그아웃에 필요하다. 과제·설정 변경 API는 아직 구현 전이다. 환경 설정이나 DB 장애는 no-store 503으로 응답한다.
+공개 인증 경로는 POST `/api/auth/sign-in/social`, GET `/api/auth/callback/google`뿐이다. 제품 계약의 세션·로그아웃·설정·과제 7개 API를 구현했다. 쓰기 요청에는 세션 CSRF·정확한 Origin을 사용하고 설정·과제 수정에는 Idempotency-Key·If-Match가 필요하다. 서버는 본문·SQL·비밀 없이 no-store 오류를 반환한다. 인증 경로의 설정 불가는 503, 제품 저장 실패는 500이며 UI는 같은 요청을 보존한다.
+
+## 실제 PostgreSQL·제품 브라우저 검사
+
+실제 데이터와 분리된 loopback DB `planner_test_product`, `planner_test_e2e`를 사용한다. 테스트는 고정된 합성 사용자 자료만 정리한다. 실제 사용 DB를 지정하지 않는다.
+
+```sh
+PLANNER_TEST_DATABASE_URL=... npm run check
+PLANNER_E2E_DATABASE_URL=... npm run test:e2e:product
+```
+
+첫 명령은 별도 연결의 PostgreSQL 경쟁 조건을 포함한다. URL을 생략하면 PGlite에서 실행하고 해당 별도 연결 검사 1개만 명시적으로 생략한다. 두 번째 명령은 합성 세션을 테스트 DB에 준비하고 3101 포트의 개발 서버에서 실제 제품 HTTP·PC·모바일 흐름을 확인한다. 테스트용 로그인 API는 없다. 기본 `test:e2e`는 비밀값 없이 빌드한 안내 화면을 3100 포트에서 확인한다. 두 테스트 서버는 자동 종료된다.
+
+API 응답은 OpenAPI JSON Schema로 검사하며 `npm run db:prune`은 만료된 요청·OAuth state·세션만 제한된 묶음으로 정리한다. [베타 진입 조건](release-readiness.md)과 [최신 검증](verification/planner-core.md)을 따른다.
 
 ## CI
 
 `.github/workflows/verify.yml`은 PR에서 명세·린트·타입·단위/격리 통합·빌드·브라우저 검사를 실행한다. OAuth 비밀은 CI에 넣지 않으며 합성 키·토큰·테스트 DB만 사용한다. 로컬·원격 CI 결과와 실제 Google·PostgreSQL 서버 통합 검증은 별도로 기록한다.
+
+## 본인 전용 베타
+
+테스트 중 Google 로그인을 잠시 중지하려면 `.env.local`에 `AUTH_LOGIN_ENABLED=false`를 설정한다. 버튼에 일시 중지 안내가 표시되고 로그인 시작·Google 콜백이 503으로 차단된다. 재개하려면 `true`로 바꾸고 서버를 재시작한다. 이 설정은 새 로그인 발급을 제어하며 기존 세션은 세션 만료·로그아웃 정책을 따른다.
+
+[Google OAuth 생성·로컬 설정](google-oauth-local-setup.md)을 따른다. `AUTH_ALLOWED_EMAILS` 누락 시 인증이 비활성화된다. 실제 허용 이메일·OAuth 비밀은 무시되는 `.env.local`에만 저장한다.

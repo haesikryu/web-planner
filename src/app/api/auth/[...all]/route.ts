@@ -1,5 +1,7 @@
 import { getAuthRuntime } from "@/server/auth/runtime";
 import { apiError, validOrigin } from "@/server/auth/security";
+import { timezone } from "@/domain/rules";
+import { isLoginEnabled } from "@/server/config";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,6 +13,9 @@ async function handle(request: Request) {
       !(request.method === "GET" && path === "/api/auth/callback/google")) {
     return apiError(404, "NOT_FOUND", "요청한 경로가 없습니다.");
   }
+  if (!isLoginEnabled(process.env)) {
+    return apiError(503, "AUTH_UNAVAILABLE", "로그인이 일시 중지되었습니다.");
+  }
   try {
     const { auth, config } = getAuthRuntime();
     if (request.method === "POST") {
@@ -21,8 +26,10 @@ async function handle(request: Request) {
         return apiError(422, "INVALID_INPUT", "Google 로그인 요청을 확인해주세요.");
       }
       // Fixed callback destinations. Never accept a client-supplied redirect or token.
+      let initialTimezone = "UTC";
+      try { initialTimezone = timezone(body.timezone); } catch { /* A device suggestion is optional. */ }
       request = new Request(request.url, { method: "POST", headers: request.headers,
-        body: JSON.stringify({ provider: "google", callbackURL: "/", errorCallbackURL: "/?auth=error", disableRedirect: true }) });
+        body: JSON.stringify({ provider: "google", callbackURL: "/", errorCallbackURL: "/?auth=error", disableRedirect: true, additionalData: { initialTimezone } }) });
     }
     const result = await auth.handler(request);
     if (result.status >= 500) return apiError(503, "AUTH_UNAVAILABLE", "로그인 연결을 확인할 수 없습니다.");

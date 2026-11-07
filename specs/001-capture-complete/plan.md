@@ -36,7 +36,7 @@ Google 시작·콜백 경로는 인증 라이브러리가 담당하며 제품 �
 - E2E: 로그인 후 입력 → 오늘 지정 → 완료 → 완료 취소.
 - 운영: 저장 실패율·응답 지연·충돌 횟수만 집계. 본문·검색어·토큰 제외.
 
-명세 검사 스크립트는 문서와 JSON의 내부 연결을 확인한다. 기본 화면 E2E와 환경설정 단위 검사를 추가했지만 실제 제품 API·Google 로그인·성능 검증을 대신하지 않는다. 상세 제품 검증 연결은 traceability.md, 기반 결과는 docs/verification/development-foundation.md를 따른다. 실제 CI 정의는 `.github/workflows/verify.yml`이며 기존 docs/ci 파일은 이전 명세 검사 예시다.
+명세 구조 검사는 문서·JSON 연결을 확인한다. 제품 API는 OpenAPI 0.4.0 스키마로 응답 계약을 검증하며 PostgreSQL 18에서 동시 요청·롤백·복원을 시험한다. PC·모바일 제품 E2E와 자동 접근성 검사를 추가했다. 실제 Google·운영 부하 검증과는 구분한다. 최신 결과는 docs/verification/planner-core.md와 traceability.md를 따른다. 실제 CI는 `.github/workflows/verify.yml`이다.
 
 ## 배포 진입 조건
 

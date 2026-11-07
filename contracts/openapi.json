@@ -2,8 +2,8 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Web Planner FEAT-001 API",
-    "version": "0.3.0",
-    "description": "명세 초안. 세션·로그아웃 경계는 구현·격리 검증했으며 실제 Google OAuth·PostgreSQL 서버 통합은 대기 중이다. 과제 API는 아직 구현 전이다."
+    "version": "0.4.0",
+    "description": "FEAT-001 실행 계약. 인증·설정·과제 API와 입력함·오늘·완료 취소를 구현했으며 실제 Google 공급자 검증과 배포는 대기 중이다."
   },
   "security": [
     {
@@ -133,7 +133,7 @@
             },
             "headers": {
               "ETag": {
-                "description": "단일 strong ETag。形式は \"v{version}\"。",
+                "description": "단일 strong ETag. 형식은 v 뒤에 버전을 붙이고 큰따옴표로 감싼다.",
                 "schema": {
                   "type": "string"
                 }
@@ -252,6 +252,9 @@
           },
           "500": {
             "$ref": "#/components/responses/500"
+          },
+          "400": {
+            "$ref": "#/components/responses/400"
           }
         }
       },
@@ -289,7 +292,7 @@
             },
             "headers": {
               "ETag": {
-                "description": "단일 strong ETag。形式は \"v{version}\"。",
+                "description": "단일 strong ETag. 형식은 v 뒤에 버전을 붙이고 큰따옴표로 감싼다.",
                 "schema": {
                   "type": "string"
                 }
@@ -345,7 +348,7 @@
             },
             "headers": {
               "ETag": {
-                "description": "단일 strong ETag。形式は \"v{version}\"。",
+                "description": "단일 strong ETag. 형식은 v 뒤에 버전을 붙이고 큰따옴표로 감싼다.",
                 "schema": {
                   "type": "string"
                 }
@@ -416,7 +419,7 @@
             },
             "headers": {
               "ETag": {
-                "description": "단일 strong ETag。形式は \"v{version}\"。",
+                "description": "단일 strong ETag. 형식은 v 뒤에 버전을 붙이고 큰따옴표로 감싼다.",
                 "schema": {
                   "type": "string"
                 }
@@ -945,6 +948,16 @@
             "schema": {
               "type": "string",
               "const": "no-store"
+            }
+          }
+        }
+      },
+      "400": {
+        "description": "다른 사용자·조회 조건 또는 변조된 목록 커서",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
             }
           }
         }
