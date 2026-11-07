@@ -2,8 +2,8 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Web Planner FEAT-001 API",
-    "version": "0.2.0",
-    "description": "설계 초안. 실행 서버·OAuth 환경은 아직 없다. 모든 제품 API는 동일 출처 HTTPS, 쿠키 세션과 owner 격리를 사용한다. 상세 규칙은 docs/domain/rules.md와 plan.md를 따른다."
+    "version": "0.3.0",
+    "description": "명세 초안. 세션·로그아웃 경계는 구현·격리 검증했으며 실제 Google OAuth·PostgreSQL 서버 통합은 대기 중이다. 과제 API는 아직 구현 전이다."
   },
   "security": [
     {
@@ -43,6 +43,9 @@
           },
           "500": {
             "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
           }
         }
       }
@@ -85,6 +88,9 @@
           },
           "500": {
             "$ref": "#/components/responses/500"
+          },
+          "503": {
+            "$ref": "#/components/responses/503"
           }
         }
       }
@@ -909,6 +915,24 @@
       },
       "500": {
         "description": "INTERNAL_ERROR. 저장 여부 불확실 시 동일 키 재시도",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "headers": {
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "no-store"
+            }
+          }
+        }
+      },
+      "503": {
+        "description": "인증 설정·인증 또는 DB 연결을 사용할 수 없음. 비밀값 없는 오류와 no-store 반환.",
         "content": {
           "application/json": {
             "schema": {

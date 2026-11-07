@@ -9,7 +9,7 @@ npm ci
 npm run dev
 ```
 
-기본 주소는 http://127.0.0.1:3000 이다. 현재는 로그인 준비 화면과 `/api/health`만 실행된다. OAuth 비밀값과 DB가 없어도 기본 화면·빌드·기반 테스트는 가능하다.
+기본 주소는 http://127.0.0.1:3000 이다. OAuth 설정 전에는 로그인 준비 화면을 표시한다. 인증 설정과 마이그레이션을 마치면 Google 로그인 버튼이 동작한다. 비밀값과 DB 서버 없이도 기본 화면·빌드·합성 인증·격리 DB 테스트를 실행할 수 있다.
 
 ## 검사
 
@@ -20,7 +20,7 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-`check`는 명세 구조·린트·타입·단위 테스트다. E2E는 프로덕션 빌드를 3100 포트에서 별도로 실행한다. 테스트가 사용하는 서버와 3100 포트를 공유하지 않는다. 360px 모바일과 PC에서 화면, 준비 중 표시, 가로 넘침, 키보드 진입, 상태 API와 보안 헤더를 확인한다.
+`check`는 명세 구조·린트·타입·단위/격리 통합 테스트다. E2E는 비밀값 없는 프로덕션 빌드를 3100 포트에서 별도로 실행한다. 테스트 서버와 포트를 공유하지 않는다. 360px 모바일과 PC에서 화면·접근성·상태 API·세션 미인증·우회 경로 차단·설정 누락 오류를 확인한다.
 
 `/api/health`는 프로세스 liveness만 알리며 DB·Google 인증 readiness를 의미하지 않는다. 개인 데이터나 설정 값을 반환하지 않는다. 실제 기능 검증 상태는 PROGRESS.md와 기능별 traceability.md에 별도로 기록한다.
 
@@ -30,10 +30,13 @@ Docker 엔진을 직접 실행한 뒤 다음 명령을 사용한다.
 
 ```sh
 npm run db:up
+npm run db:migrate
 npm run db:stop
 ```
 
-볼륨은 정지 후에도 유지된다. 데이터 삭제 명령은 기본 스크립트에 제공하지 않는다. 스키마와 마이그레이션은 T-004에서 추가하므로 현재 `db:up`만으로 앱 스키마가 생성되지는 않는다.
+먼저 `.env.local`에 DATABASE_URL을 설정한다. `db:migrate`는 이 파일을 읽고 검토된 SQL을 트랜잭션과 마이그레이션 이력으로 적용한다. `db:up`만으로 앱 스키마를 생성하지 않는다. 볼륨은 정지 후에도 유지되며 데이터 삭제 스크립트는 제공하지 않는다. 스키마 변경은 `src/server/db/schema.ts` 수정 → `npm run db:generate -- --name 설명` → SQL 검토 → 테스트 순서다. 적용된 SQL을 수정하지 말고 새 마이그레이션을 추가한다. 운영 실행은 별도 변경 검토 대상이다.
+
+`tests/unit/auth-database.test.ts`는 PGlite 인메모리 DB에서 같은 SQL과 실제 Drizzle 어댑터를 실행한다. 복원은 PGlite 데이터 디렉터리 스냅샷 기준이며 PostgreSQL 18 서버의 pg_dump/pg_restore·다중 연결 경쟁 조건 시험과 구분한다.
 
 ## 환경변수와 Google OAuth
 
@@ -43,6 +46,10 @@ npm run db:stop
 
 `src/server/config.ts`는 누락 값, 짧은 비밀, 잘못된 DB 프로토콜, 외부 HTTP·인증정보·경로가 포함된 인증 origin을 거부한다. 오류에는 항목명만 포함하며 값은 출력하지 않는다. 이 경계의 통과가 인증 서버 구현이나 동작 검증을 뜻하지 않는다.
 
+Google Cloud에서 웹 애플리케이션 OAuth 클라이언트를 만들고 위 콜백을 정확히 등록한다. 테스트 공개 상태에서는 허용한 테스트 사용자로 확인한다. 비밀값은 채팅·PR·Drive 문서로 보내지 않고 무시되는 로컬 환경 파일이나 배포 비밀 저장소에 직접 입력한다. 신규 가입은 `AUTH_ALLOW_SIGN_UP=false`가 기본이며 D-01 대상 사용자 결정 후 해당 환경에서 명시적으로 허용한다. 기본 사용자는 UTC로 생성하며 시간대 제안·변경은 후속 T-005에서 구현한다.
+
+공개 인증 경로는 POST `/api/auth/sign-in/social`, GET `/api/auth/callback/google`뿐이다. 제품 경로는 GET `/api/session`, POST `/api/logout`이며 세션 응답에서 얻은 X-CSRF-Token과 정확한 Origin이 로그아웃에 필요하다. 과제·설정 변경 API는 아직 구현 전이다. 환경 설정이나 DB 장애는 no-store 503으로 응답한다.
+
 ## CI
 
-`.github/workflows/verify.yml`은 PR에서 명세·린트·타입·단위·빌드·브라우저 검사를 수행하도록 구성한다. 로컬 통과와 원격 CI 통과를 구분해 기록한다. OAuth 비밀을 CI에 넣지 않으며 모든 기반 테스트는 합성 설정만 사용한다. 실제 인증·DB 통합 검증은 이후 격리 환경으로 추가한다.
+`.github/workflows/verify.yml`은 PR에서 명세·린트·타입·단위/격리 통합·빌드·브라우저 검사를 실행한다. OAuth 비밀은 CI에 넣지 않으며 합성 키·토큰·테스트 DB만 사용한다. 로컬·원격 CI 결과와 실제 Google·PostgreSQL 서버 통합 검증은 별도로 기록한다.

@@ -21,3 +21,21 @@ test("health response exposes liveness without secrets or database readiness cla
   expect(response.headers()["x-content-type-options"]).toBe("nosniff");
   expect(await response.json()).toEqual({ status: "ok", service: "web-planner" });
 });
+
+test("anonymous product session returns a private contract error", async ({ request }) => {
+  const response = await request.get("/api/session");
+  expect(response.status()).toBe(401);
+  expect(response.headers()["cache-control"]).toBe("no-store");
+  expect(await response.json()).toMatchObject({ code: "UNAUTHENTICATED", requestId: expect.any(String) });
+});
+
+test("library bypass routes are unavailable and missing OAuth setup fails safely", async ({ request }) => {
+  expect((await request.get("/api/auth/get-session")).status()).toBe(404);
+  const response = await request.post("/api/auth/sign-in/social", {
+    headers: { Origin: "http://127.0.0.1:3100" }, data: { provider: "google" }
+  });
+  expect(response.status()).toBe(503);
+  const body = await response.json();
+  expect(body.code).toBe("AUTH_UNAVAILABLE");
+  expect(JSON.stringify(body)).not.toMatch(/DATABASE_URL|GOOGLE_CLIENT_SECRET|BETTER_AUTH_SECRET|postgresql:/);
+});
