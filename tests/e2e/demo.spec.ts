@@ -1,5 +1,38 @@
 import { expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { Temporal } from "@js-temporal/polyfill";
+
+test("diary pages assign tasks to the selected day and keep completion on the real day", async ({ page }) => {
+  await page.goto("/demo");
+  await expect(page.getByRole("status")).toHaveText("이 탭에 저장된 테스트 목록입니다.");
+  const today = (await page.locator(".date-line").textContent() ?? "").slice(0, 10);
+  const tomorrow = Temporal.PlainDate.from(today).add({ days: 1 });
+  await page.getByLabel("지금 떠오른 일").fill("다음 페이지의 할 일");
+  await page.getByRole("button", { name: "입력함에 저장" }).click();
+  const inbox = page.getByRole("region", { name: "입력함", exact: true });
+  await expect(inbox.getByText("다음 페이지의 할 일", { exact: true })).toBeVisible();
+  await page.getByLabel("지금 떠오른 일").fill("보존할 미저장 입력");
+  await page.getByRole("button", { name: "다음 날", exact: true }).click();
+  await expect(page.locator(".date-line")).toContainText(tomorrow.toString());
+  await expect(page.getByLabel("지금 떠오른 일")).toHaveValue("보존할 미저장 입력");
+  await inbox.getByRole("button", { name: "이날로", exact: true }).click();
+  await expect(page.getByRole("region", { name: "이날의 할 일", exact: true }).getByText("다음 페이지의 할 일", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "이전 날", exact: true }).click();
+  await expect(page.getByRole("region", { name: "오늘의 할 일", exact: true }).getByText("다음 페이지의 할 일", { exact: true })).toHaveCount(0);
+  const calendarToggle = page.getByRole("button", { name: "달력 보기", exact: true });
+  if (await calendarToggle.isVisible()) await calendarToggle.click();
+  await page.getByRole("button", { name: "다음 달", exact: true }).click();
+  await expect(page.locator(".date-line")).toContainText(today);
+  await page.getByRole("button", { name: "이전 달", exact: true }).click();
+  if (tomorrow.month !== Temporal.PlainDate.from(today).month) await page.getByRole("button", { name: "다음 달", exact: true }).click();
+  await page.getByRole("button", { name: `${tomorrow.day}, ${tomorrow.year}년 ${tomorrow.month}월 ${tomorrow.day}일`, exact: true }).click();
+  await page.getByRole("region", { name: "이날의 할 일", exact: true }).getByRole("button", { name: "완료", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText(`${today}의 완료 기록`);
+  await page.getByRole("button", { name: "이전 날", exact: true }).click();
+  await expect(page.getByRole("region", { name: "오늘 완료", exact: true }).getByText("다음 페이지의 할 일", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("지금 떠오른 일")).toHaveValue("보존할 미저장 입력");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
 
 test("paused login offers a working demo with tab persistence and no product API traffic", async ({ page, context, request }) => {
   const apiRequests: string[] = [];

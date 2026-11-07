@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
+  outputDir: "./test-results/demo",
   testDir: "./tests/e2e", testMatch: "demo.spec.ts", fullyParallel: true, forbidOnly: Boolean(process.env.CI), retries: 0,
   reporter: "list", use: { baseURL: "http://127.0.0.1:3102", trace: "retain-on-failure" },
   projects: [ { name: "demo-desktop", use: { ...devices["Desktop Chrome"] } },

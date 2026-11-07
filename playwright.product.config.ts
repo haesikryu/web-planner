@@ -3,6 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 const databaseUrl = process.env.PLANNER_E2E_DATABASE_URL;
 if (!databaseUrl) throw new Error("PLANNER_E2E_DATABASE_URL is required for product browser tests");
 export default defineConfig({
+  outputDir: "./test-results/product",
   testDir: "./tests/e2e", testMatch: "planner.spec.ts", fullyParallel: true, forbidOnly: Boolean(process.env.CI), retries: 0,
   reporter: "list", use: { baseURL: "http://127.0.0.1:3101", trace: "retain-on-failure" },
   projects: [ { name: "product-desktop", use: { ...devices["Desktop Chrome"] } },

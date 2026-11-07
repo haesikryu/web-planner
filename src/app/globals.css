@@ -1,4 +1,4 @@
-:root { color-scheme: light; --ink: #233c3a; --muted: #64716e; --line: #dce1d9; --paper: #f8f8f3; }
+:root { color-scheme: light; --ink: #233c3a; --muted: #58675e; --line: #dce1d9; --paper: #f8f8f3; }
 * { box-sizing: border-box; }
 html { min-width: 320px; background: var(--paper); }
 body { margin: 0; color: var(--ink); font-family: Arial, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; -webkit-font-smoothing: antialiased; }
@@ -30,46 +30,143 @@ h2 { font-size: 16px; margin: 0 0 10px; letter-spacing: -.4px; font-weight: 600;
 .demo-entry { margin-top: 24px; }
 .demo-button { display: inline-flex; align-items: center; justify-content: center; gap: 18px; min-height: 54px; padding: 14px 24px; border-radius: 9px; background: var(--ink); color: white; font-size: 14px; font-weight: 600; text-decoration: none; }
 .demo-entry-note { font-size: 12px; line-height: 1.8; color: var(--muted); }
-.demo-notice { padding: 18px 22px; margin-bottom: 28px; border: 1px solid #c8d2c9; border-radius: 10px; background: #e8ede5; font-size: 13px; line-height: 1.8; }
-.demo-notice-detail { margin: 4px 0 0; }
-.planner { max-width: 1208px; margin: 16px auto 72px; padding: 0 32px; }
-.planner-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 32px; }
-.planner-heading h1 { font-size: 42px; letter-spacing: -2px; }
-.planner .eyebrow { margin-bottom: 12px; color: var(--muted); }
-.date-line { color: var(--muted); font-size: 13px; }
-.planner button { font: inherit; font-size: 13px; border: 1px solid #c8d2c9; border-radius: 7px; padding: 10px 14px; background: #e8ede5; color: var(--ink); cursor: pointer; min-height: 42px; }
-.planner button:disabled { opacity: .55; cursor: not-allowed; }
+body:has(.diary-app) { background: #eaece6; }
+body:has(.diary-app) .site-header { max-width: 1480px; padding: 22px 36px; border-bottom: 1px solid #d6dcd2; }
+body:has(.diary-app) .site-footer { max-width: 1408px; }
+.planner { max-width: 1480px; margin: 0 auto 64px; padding: 0 36px; }
+.planner button { font: inherit; font-size: 12px; border: 1px solid #bdc9bd; border-radius: 5px; padding: 9px 12px; background: #e8ede5; color: var(--ink); cursor: pointer; min-height: 38px; }
+.planner button:hover:not(:disabled) { background: #dce5d8; }
+.planner button:disabled { opacity: .5; cursor: not-allowed; }
 .planner .quiet-button { background: transparent; }
-.capture { padding: 24px; background: #fffefa; border: 1px solid var(--line); border-radius: 12px; }
-.capture label { font-weight: 600; font-size: 14px; display: block; margin-bottom: 12px; }
-.capture-row { display: flex; gap: 12px; }
-.planner input { width: 100%; min-width: 0; padding: 12px; border: 1px solid #c8d2c9; border-radius: 7px; background: white; color: var(--ink); font: inherit; font-size: 16px; }
-.capture-row button { flex-shrink: 0; background: var(--ink); color: white; }
-.field-note, .task-meta { font-size: 12px; color: var(--muted); line-height: 1.7; }
-.field-note { margin: 12px 0 0; }
-.planner-notice { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 20px 0; font-size: 13px; color: var(--muted); }
-.error-note { padding: 16px; border-left: 3px solid #b16f43; background: #fff2df; font-size: 14px; line-height: 1.7; }
-.recovery, .edit-panel { padding: 22px; border: 1px solid #d6b78b; border-radius: 10px; background: #fff9ed; margin: 20px 0; line-height: 1.7; font-size: 14px; }
+.planner input { width: 100%; min-width: 0; padding: 12px; border: 1px solid #bdc9bd; border-radius: 4px; background: #fffefa; color: var(--ink); font: inherit; font-size: 16px; }
+.planner .eyebrow { margin: 0 0 10px; font-size: 9px; letter-spacing: 2px; }
+.diary-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 30px 0 24px; }
+.diary-toolbar-actions { display: flex; gap: 8px; align-items: center; }
+.diary-title { margin: 0; font-size: 25px; font-weight: 600; letter-spacing: -1px; }
+.diary-edition { display: inline-block; margin-left: 16px; font: 10px Georgia, serif; letter-spacing: 1px; color: #52614c; }
+.demo-notice { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 24px; padding: 10px 14px; border-left: 2px solid #7b8e71; background: #e1e7dc; color: #4b604f; font-size: 11px; line-height: 1.7; }
+.demo-notice-detail { margin: 0; }
+.diary-shell { display: grid; grid-template-columns: 218px minmax(0, 1fr); gap: 32px; align-items: start; }
+.diary-sidebar { padding-top: 8px; }
+.diary-calendar { padding: 0 0 24px; border-bottom: 1px solid #ced7c9; }
+.calendar-month { display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 17px; }
+.calendar-month h2 { margin: 0; font-size: 14px; }
+.planner .calendar-arrow { min-height: 32px; width: 28px; padding: 0; border: 0; background: transparent; }
+.calendar-weekdays, .calendar-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); text-align: center; gap: 3px 0; }
+.calendar-weekdays { font-size: 10px; color: #52614c; margin-bottom: 8px; }
+.calendar-weekdays > :last-child { color: #8c503b; }
+.planner .calendar-day { min-width: 0; min-height: 31px; padding: 0; border: 1px solid transparent; background: transparent; font-size: 11px; border-radius: 50%; }
+.planner .calendar-day.is-today { border-color: #839378; }
+.planner .calendar-day.is-selected { background: #334d3d; color: #fffdf6; border-color: #334d3d; }
+.planner .calendar-today { margin-top: 15px; width: 100%; min-height: 34px; background: transparent; font-size: 11px; }
+.sidebar-label { font-size: 9px; font-weight: 600; letter-spacing: 1.5px; color: #52614c; margin: 24px 0 12px; }
+.diary-bookmarks { padding-bottom: 20px; border-bottom: 1px solid #ced7c9; }
+.diary-bookmarks a { display: flex; align-items: center; gap: 12px; padding: 12px 10px; border-radius: 4px; text-decoration: none; font-size: 12px; }
+.diary-bookmarks a:hover { background: #dee5d9; }
+.diary-bookmarks a > :first-child { color: #7f553c; font: 11px Georgia, serif; }
+.diary-bookmarks a > :last-child { margin-left: auto; color: #59664e; }
+.diary-key { color: #52614c; font-size: 11px; line-height: 1.9; }
+.diary-key span { padding: 0 8px 0 0; font-size: 17px; }
+
+.diary-quote { margin-top: 24px; line-height: 2; font-size: 13px; }
+.diary-content { min-width: 0; }
+.diary-page-navigation { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 40px; margin-bottom: 4px; }
+.diary-current-date { margin: 0; font-size: 13px; font-weight: 600; }
+.diary-current-date > span { margin-left: 10px; font-size: 10px; font-weight: 400; color: #52614c; }
+.diary-page-navigation > div { display: flex; gap: 6px; }
+.diary-page-navigation button { background: transparent; min-width: 38px; padding: 6px 10px; }
+.planner .calendar-toggle { display: none; }
+.planner-notice { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin: 6px 0 14px; font-size: 11px; color: #52614c; }
+.save-status { margin: 0; }
+.planner-notice .quiet-button { border: 0; font-size: 10px; padding-right: 0; }
+.diary-book { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #c4c9ba; border-radius: 8px 12px 12px 8px; background: #fffdf5; box-shadow: 0 3px 0 #e3e2d6, 0 4px 0 #c4c9ba, 0 7px 0 #f5f3e8, 0 8px 0 #c9cdbf, 0 18px 35px #37432e12; }
+.diary-book::after { content: ""; position: absolute; left: calc(50% - 10px); top: 0; bottom: 0; width: 20px; pointer-events: none; background: linear-gradient(90deg, transparent, #b5b29f13 35%, #aaa99425 49%, #fffef7 51%, #b8b59f0a 65%, transparent); }
+.diary-page { min-width: 0; min-height: 760px; padding: 34px 32px 18px; display: flex; flex-direction: column; position: relative; }
+.diary-page-left { border-right: 1px solid #deded0; }
+.diary-page-left::before { content: ""; position: absolute; top: -1px; right: 30px; width: 22px; height: 54px; background: #6d8060; clip-path: polygon(0 0,100% 0,100% 100%,50% 83%,0 100%); }
+.diary-day-heading { display: flex; gap: 20px; align-items: center; padding: 14px 0 20px; }
+.diary-day-number { font: 76px/.95 Georgia, serif; color: #3c513d; letter-spacing: -5px; }
+.diary-weekday { margin: 0 0 9px; color: #59664f; font-size: 11px; }
+.diary-day-heading h1 { font-size: 24px; letter-spacing: -1px; line-height: 1.4; }
+.date-line { color: #67735f; font-size: 10px; margin: 9px 0 0; overflow-wrap: anywhere; }
+.page-intention { margin: 0 0 30px; padding-top: 16px; border-top: 1px solid #d8decd; font-size: 11px; color: #697460; line-height: 1.8; word-break: keep-all; }
+.diary-capture-heading { padding-top: 14px; margin-bottom: 25px; }
+.diary-capture-heading h2 { font-size: 24px; font-weight: 600; margin-bottom: 13px; letter-spacing: -1px; }
+.diary-capture-heading > p:last-child { font-size: 11px; color: #67735f; line-height: 1.8; }
+.capture { padding: 16px; margin-bottom: 30px; background: #f0f2e8; border: 1px solid #dbe2cf; border-radius: 4px; }
+.capture label { font-size: 12px; font-weight: 600; display: block; margin-bottom: 10px; }
+.capture-row { display: flex; flex-direction: column; gap: 8px; }
+.capture-row button { background: #3b513e; color: white; border-color: #3b513e; align-self: flex-end; }
+.capture-row button:hover:not(:disabled) { background: #29402e; }
+.field-note, .task-meta { font-size: 10px; color: #59664f; line-height: 1.8; }
+.field-note { margin: 10px 0 0; }
+.task-section { min-width: 0; margin-bottom: 30px; scroll-margin-top: 24px; }
+.section-heading { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #aebca4; padding-bottom: 12px; }
+.section-heading h2 { font-size: 13px; font-weight: 600; margin: 0; }
+.task-count { color: #64775b; font: 12px Georgia, serif; }
+.task-section ul { list-style: none; margin: 0; padding: 0; }
+.task-card { padding: 16px 0 14px; border-bottom: 1px solid #e2e5d8; }
+.task-title { display: flex; align-items: baseline; gap: 10px; line-height: 1.8; font-size: 14px; margin: 0 0 5px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.bullet-symbol { flex-shrink: 0; font: 19px Georgia, serif; color: #617952; }
+.completed .task-title { color: #68785f; text-decoration: line-through; }
+.task-meta { margin: 0 0 8px 20px; }
+.task-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-left: 20px; }
+.task-actions button { background: transparent; font-size: 10px; padding: 5px 9px; min-height: 32px; border-color: #d0d9c5; }
+.empty-state { color: #6c7764; font-size: 11px; line-height: 2; min-height: 120px; margin: 0; padding: 18px 0; background: repeating-linear-gradient(transparent 0, transparent 31px, #e4e7da 31px, #e4e7da 32px); word-break: keep-all; }
+.completion-note { color: #6c7764; font-size: 10px; line-height: 1.8; margin: -13px 0 30px; }
+.diary-page-footer { margin-top: auto; padding-top: 20px; display: flex; justify-content: space-between; align-items: center; color: #5b6850; font-size: 8px; letter-spacing: 1.3px; }
+.page-number { font: 12px Georgia, serif; }
+.error-note { padding: 16px; border-left: 3px solid #b16f43; background: #fff2df; font-size: 13px; line-height: 1.7; }
+.recovery, .edit-panel { padding: 22px; border: 1px solid #d6b78b; border-radius: 6px; background: #fff9ed; margin: 20px 0; line-height: 1.7; font-size: 13px; }
 .recovery button, .edit-panel button { margin: 8px 8px 0 0; }
 .edit-panel label { display: block; margin: 12px 0; }
 .edit-panel input { margin-top: 6px; }
-.planner-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
-.task-section { min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: #fffefa; }
-.section-heading { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 16px; }
-.section-heading h2 { margin: 0; }
-.section-heading > span { color: #588173; font-size: 13px; }
-.task-section ul { margin: 0; padding: 0; list-style: none; }
-.task-card { border-bottom: 1px solid var(--line); padding: 18px 0; }
-.task-title { line-height: 1.7; font-size: 15px; margin: 0 0 4px; overflow-wrap: anywhere; white-space: pre-wrap; }
-.completed .task-title { color: #64716e; text-decoration: line-through; }
-.task-meta { margin: 0 0 12px; }
-.task-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.task-actions button { background: transparent; font-size: 12px; }
-.empty-state { color: var(--muted); padding: 28px 0; font-size: 13px; line-height: 1.9; }
-.timezone-panel { margin-top: 32px; padding: 20px 0; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.timezone-panel { margin-top: 26px; padding: 12px 0; font-size: 11px; color: #52614c; }
 .timezone-panel summary { cursor: pointer; padding: 8px 0; }
 .timezone-panel input { display: block; max-width: 340px; margin: 10px 0; }
-.planner .timezone-panel p { line-height: 1.8; }
+.timezone-help { line-height: 1.8; }
+@media (max-width: 1100px) {
+  .diary-shell { grid-template-columns: 1fr; gap: 18px; }
+  .diary-sidebar { display: none; }
+  .diary-sidebar.is-open { display: grid; grid-template-columns: 240px 1fr; gap: 28px; padding: 20px; border: 1px solid #cdd6c5; border-radius: 6px; }
+  .diary-key { display: none; }
+  .diary-calendar, .diary-bookmarks { border: 0; padding: 0; }
+  .planner .calendar-toggle { display: inline-block; }
+}
+@media (max-width: 760px) {
+  body:has(.diary-app) .site-header { padding: 18px 20px; }
+  .planner { padding: 0 20px; }
+  .diary-toolbar { padding: 24px 0 18px; }
+  .diary-title { font-size: 22px; }
+  .diary-edition { display: none; }
+  .diary-page { padding: 28px 20px 20px; }
+  .diary-day-heading { gap: 12px; }
+  .diary-day-number { font-size: 60px; }
+  .diary-day-heading h1 { font-size: 20px; }
+  .diary-capture-heading h2 { font-size: 21px; }
+  .demo-notice { gap: 3px; margin-bottom: 18px; }
+  .demo-notice-detail { font-size: 10px; }
+}
+@media (max-width: 620px) {
+  .planner { padding: 0 14px; }
+  .diary-book { grid-template-columns: 1fr; }
+  .diary-book::after { display: none; }
+  .diary-page { min-height: auto; padding: 28px 24px; }
+  .diary-page-left { border-right: 0; border-bottom: 1px dashed #c1cbb6; }
+  .diary-day-heading { gap: 20px; }
+  .diary-day-number { font-size: 72px; }
+  .diary-day-heading h1 { font-size: 26px; }
+  .diary-sidebar.is-open { grid-template-columns: 1fr; gap: 16px; }
+  .diary-bookmarks { display: grid; grid-template-columns: 1fr 1fr; }
+  .diary-bookmarks .sidebar-label { grid-column: 1 / -1; margin-top: 5px; }
+  .diary-bookmarks a { padding: 9px 6px; }
+  .diary-current-date > span { display: block; margin: 5px 0 0; }
+  .planner-notice { gap: 6px; }
+  .save-status { max-width: 65%; line-height: 1.7; }
+  .diary-toolbar-actions button { padding: 8px; font-size: 10px; }
+  .calendar-days { gap: 5px; }
+  .planner .calendar-day { min-height: 38px; }
+}
 @media (max-width: 760px) {
   .site-header { padding: 26px 24px; }
   .header-note { display: none; }
@@ -82,10 +179,4 @@ h2 { font-size: 16px; margin: 0 0 10px; letter-spacing: -.4px; font-weight: 600;
   .principles { padding: 26px 22px 20px; transform: none; box-shadow: 7px 8px 0 #e9ede4; }
   .principles article { gap: 18px; }
   .site-footer { margin: 0 24px; gap: 20px; line-height: 1.7; }
-  .planner { padding: 0 20px; }
-  .planner-heading { flex-direction: column; }
-  .planner-heading h1 { font-size: 36px; }
-  .capture, .task-section { padding: 18px; }
-  .capture-row, .planner-notice { flex-direction: column; align-items: stretch; }
-  .planner-grid { grid-template-columns: 1fr; gap: 20px; }
 }

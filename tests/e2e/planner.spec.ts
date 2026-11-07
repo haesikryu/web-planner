@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import { type BrowserContext, expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { join } from "node:path";
+import { Temporal } from "@js-temporal/polyfill";
 
 const secret = "synthetic-browser-test-secret-32-characters";
 async function seedSession(context: BrowserContext) {
@@ -155,4 +156,53 @@ test("timezone change persists and logout warns before discarding unsaved input"
   await page.getByRole("button", { name: "로그아웃 / 계정 바꾸기" }).click();
   await expect(page.getByRole("button", { name: "Google로 시작하기" })).toBeVisible();
   await expect(page.getByText("아직 저장하지 않은 입력", { exact: true })).toHaveCount(0);
+});
+
+test("a delayed previous diary page cannot replace the current date's tasks or status", async ({ page }) => {
+  await page.goto("/");
+  const session = await (await page.request.get("/api/session")).json();
+  const today = Temporal.PlainDate.from(session.serverDate);
+  const tomorrow = today.add({ days: 1 }).toString(), followingDay = today.add({ days: 2 }).toString();
+  await page.getByLabel("지금 떠오른 일").fill("이전 페이지의 과제");
+  await page.getByRole("button", { name: "입력함에 저장", exact: true }).click();
+  const inbox = page.getByRole("region", { name: "입력함", exact: true });
+  await expect(inbox.getByText("이전 페이지의 과제", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "다음 날", exact: true }).click();
+  await expect(page.locator(".date-line")).toContainText(tomorrow);
+  await inbox.getByRole("button", { name: "이날로", exact: true }).click();
+  await expect(page.getByRole("region", { name: "이날의 할 일", exact: true }).getByText("이전 페이지의 과제", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "이전 날", exact: true }).click();
+  await expect(page.locator(".date-line")).toContainText(today.toString());
+  await expect(page.getByRole("status")).toHaveText("서버에 저장된 목록입니다.");
+
+  let markHeld: () => void = () => {}, releaseResponse: () => void = () => {};
+  const held = new Promise<void>(resolve => { markHeld = resolve; });
+  const release = new Promise<void>(resolve => { releaseResponse = resolve; });
+  let delayOnce = true;
+  await page.route("**/api/tasks?view=scheduled&**", async route => {
+    if (!delayOnce || new URL(route.request().url()).searchParams.get("date") !== tomorrow) { await route.continue(); return; }
+    delayOnce = false;
+    const previousPage = await route.fetch();
+    markHeld();
+    await release;
+    await route.fulfill({ response: previousPage });
+  });
+  try {
+    await page.getByRole("button", { name: "다음 날", exact: true }).click();
+    await held;
+    await page.getByRole("button", { name: "다음 날", exact: true }).click();
+    await expect(page.locator(".date-line")).toContainText(followingDay);
+    await expect(page.getByRole("status")).toHaveText("서버에 저장된 목록입니다.");
+    await page.getByRole("button", { name: "목록 새로고침", exact: true }).click();
+    await expect(page.getByRole("status")).toHaveText("최신 목록을 확인했습니다.");
+    const oldLoadConfirmed = page.waitForResponse(response => new URL(response.url()).pathname === "/api/session" && response.request().method() === "GET");
+    releaseResponse();
+    await oldLoadConfirmed;
+    // Let the released response's React updates commit before checking absence and unchanged status.
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.locator(".date-line")).toContainText(followingDay);
+    await expect(page.getByRole("region", { name: "이날의 할 일", exact: true }).getByText("이전 페이지의 과제", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("status")).toHaveText("최신 목록을 확인했습니다.");
+    await expect(page.getByRole("main").getByRole("alert")).toHaveCount(0);
+  } finally { releaseResponse(); }
 });
