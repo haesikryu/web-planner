@@ -23,12 +23,123 @@ describe("browser-only demo transport", () => {
     expect(created.status).toBe(201);
     expect(created.headers.get("ETag")).toBe('"v1"');
     const task = await created.json();
-    expect(task).toMatchObject({ title: "첫 테스트", version: 1, scheduledDate: null, isUnprocessed: true });
+    expect(task).toMatchObject({ title: "첫 테스트", version: 1, scheduledDate: null, isUnprocessed: true, priority: "medium", kind: "task" });
     const saved = await demo.request("/api/settings", mutation("PATCH", { timezone: "America/Los_Angeles" }, 1));
     expect(saved.status).toBe(200);
     const refreshed = createDemoTransport(storage);
     expect(refreshed.initialSession).toMatchObject({ timezone: "America/Los_Angeles", settingsVersion: 2 });
     expect((await (await refreshed.request("/api/tasks?view=inbox")).json()).items).toEqual([task]);
+  });
+
+  it("adapts existing v1 diary entries without erasing or eagerly rewriting them", async () => {
+    const storage = memoryStorage();
+    const legacyTask = { id: "00000000-0000-4000-8000-000000000002", title: "기존 기록", status: "completed", scheduledDate: "2026-11-07",
+      isUnprocessed: false, version: 4, createdAt: "2026-11-06T00:00:00.000Z", updatedAt: "2026-11-07T00:00:00.000Z", completedAt: "2026-11-07T00:00:00.000Z" };
+    const legacy = JSON.stringify({ schemaVersion: 1, timezone: "Asia/Seoul", settingsVersion: 2, tasks: [legacyTask] });
+    storage.setItem(key, legacy);
+    const demo = createDemoTransport(storage);
+    const adapted = await (await demo.request(`/api/tasks/${legacyTask.id}`)).json();
+    expect(adapted).toMatchObject({ ...legacyTask, priority: "medium", kind: "task" });
+    expect(storage.getItem(key)).toBe(legacy);
+    const setter = vi.spyOn(storage, "setItem").mockImplementation(() => { throw new Error("Quota exceeded"); });
+    expect((await demo.request(`/api/tasks/${legacyTask.id}`, mutation("PATCH", { priority: "high" }, 4))).status).toBe(500);
+    expect(storage.getItem(key)).toBe(legacy);
+    setter.mockRestore();
+    expect((await demo.request(`/api/tasks/${legacyTask.id}`, mutation("PATCH", { priority: "high", kind: "event" }, 4))).status).toBe(200);
+    expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(2);
+    const restored = createDemoTransport(storage);
+    expect(await (await restored.request(`/api/tasks/${legacyTask.id}`)).json()).toMatchObject({ ...legacyTask, priority: "high", kind: "event", version: 5, updatedAt: expect.any(String) });
+  });
+
+  it("validates and persists priority and kind without creating no-op versions", async () => {
+    const storage = memoryStorage();
+    const demo = createDemoTransport(storage);
+    const task = await (await demo.request("/api/tasks", mutation("POST", { title: "약속", priority: "high", kind: "appointment" }))).json();
+    expect(task).toMatchObject({ priority: "high", kind: "appointment" });
+    const unchanged = await (await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { priority: "high", kind: "appointment" }, 1))).json();
+    expect(unchanged.version).toBe(1);
+    const before = storage.getItem(key);
+    for (const input of [{ priority: "urgent" }, { priority: null }, { kind: "note" }, { kind: false }, { status: "deleted" }]) {
+      expect((await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", input, 1))).status).toBe(422);
+    }
+    expect((await demo.request("/api/tasks", mutation("POST", { title: "잘못된 생성", priority: null }))).status).toBe(422);
+    expect(storage.getItem(key)).toBe(before);
+    expect((await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { priority: "low", kind: "event" }, 1))).status).toBe(200);
+    expect(await (await createDemoTransport(storage).request(`/api/tasks/${task.id}`)).json()).toMatchObject({ priority: "low", kind: "event", version: 2 });
+    for (const corrupted of [
+      { ...JSON.parse(before ?? "{}"), schemaVersion: 1, tasks: [{ ...task, priority: null }] },
+      { ...JSON.parse(before ?? "{}"), tasks: [{ ...task, kind: "note" }] },
+      { ...JSON.parse(before ?? "{}"), tasks: [{ ...task, priority: undefined }] }
+    ]) {
+      const value = JSON.stringify(corrupted);
+      storage.setItem(key, value);
+      expect(() => createDemoTransport(storage)).toThrow("손상");
+      expect(storage.getItem(key)).toBe(value);
+    }
+  });
+
+  it("keeps deferred and canceled markers on the planned day and restores completion correctly", async () => {
+    const storage = memoryStorage();
+    const demo = createDemoTransport(storage, () => new Date("2026-11-07T00:30:00.000Z"));
+    const task = await (await demo.request("/api/tasks", mutation("POST", { title: "상태 전환", scheduledDate: "2026-11-07" }))).json();
+    let version = 1;
+    const change = async (status: string) => {
+      const response = await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { status }, version));
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result).toMatchObject({ id: task.id, scheduledDate: "2026-11-07", status, version: ++version });
+      return result;
+    };
+    expect((await change("completed")).completedAt).toBe("2026-11-07T00:30:00.000Z");
+    expect((await change("canceled")).completedAt).toBeNull();
+    expect((await (await demo.request("/api/tasks?view=scheduled&date=2026-11-07")).json()).items).toHaveLength(1);
+    expect((await (await demo.request("/api/tasks?view=overdue&date=2026-11-08")).json()).items).toHaveLength(0);
+    expect((await (await demo.request("/api/tasks?view=completed&date=2026-11-07")).json()).items).toHaveLength(0);
+    await change("open");
+    expect((await change("deferred")).completedAt).toBeNull();
+    expect((await (await demo.request("/api/tasks?view=scheduled&date=2026-11-07")).json()).items[0].status).toBe("deferred");
+    expect((await (await demo.request("/api/tasks?view=scheduled&date=2026-11-08")).json()).items).toHaveLength(0);
+    expect((await (await demo.request("/api/tasks?view=overdue&date=2026-11-08")).json()).items).toHaveLength(1);
+    await change("completed");
+    expect((await (await createDemoTransport(storage).request("/api/tasks?view=completed&date=2026-11-07")).json()).items).toHaveLength(1);
+  });
+
+  it("returns undated completed entries to the inbox on restore, deferral or cancellation", async () => {
+    for (const status of ["open", "deferred", "canceled"]) {
+      const storage = memoryStorage();
+      const demo = createDemoTransport(storage);
+      const task = await (await demo.request("/api/tasks", mutation("POST", { title: "날짜 없는 기록" }))).json();
+      expect((await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { isUnprocessed: false }, 1))).status).toBe(422);
+      const processed = await (await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { status: "completed", isUnprocessed: false }, 1))).json();
+      expect(processed).toMatchObject({ status: "completed", isUnprocessed: false, version: 2 });
+      expect((await (await demo.request("/api/tasks?view=inbox")).json()).items).toHaveLength(0);
+      const before = storage.getItem(key);
+      expect((await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { status, isUnprocessed: false }, 2))).status).toBe(422);
+      expect(storage.getItem(key)).toBe(before);
+      const setter = vi.spyOn(storage, "setItem").mockImplementation(() => { throw new Error("Quota exceeded"); });
+      expect((await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { status }, 2))).status).toBe(500);
+      expect(storage.getItem(key)).toBe(before);
+      setter.mockRestore();
+      const reopened = await (await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { status }, 2))).json();
+      expect(reopened).toMatchObject({ id: task.id, status, scheduledDate: null, completedAt: null, isUnprocessed: true, version: 3 });
+      expect((await (await demo.request("/api/tasks?view=inbox")).json()).items).toEqual([reopened]);
+    }
+  });
+
+  it("counts an automatically restored inbox flag as a versioned mutation", async () => {
+    const storage = memoryStorage();
+    const demo = createDemoTransport(storage);
+    const task = await (await demo.request("/api/tasks", mutation("POST", { title: "기존 날짜 없는 항목" }))).json();
+    const legacy = JSON.parse(storage.getItem(key) ?? "{}");
+    legacy.tasks[0].isUnprocessed = false;
+    storage.setItem(key, JSON.stringify(legacy));
+    const original = storage.getItem(key);
+    expect((await (await demo.request("/api/tasks?view=inbox")).json()).items).toHaveLength(0);
+    expect(storage.getItem(key)).toBe(original);
+    const repaired = await (await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { priority: "medium" }, 1))).json();
+    expect(repaired).toMatchObject({ isUnprocessed: true, version: 2 });
+    const unchanged = await (await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { priority: "medium" }, 2))).json();
+    expect(unchanged.version).toBe(2);
   });
 
   it("uses optimistic versions across instances and keeps original ID through complete and undo", async () => {

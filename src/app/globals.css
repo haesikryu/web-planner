@@ -110,6 +110,28 @@ body:has(.diary-app) .site-footer { max-width: 1408px; }
 .bullet-symbol { flex-shrink: 0; font: 19px Georgia, serif; color: #617952; }
 .completed .task-title { color: #68785f; text-decoration: line-through; }
 .task-meta { margin: 0 0 8px 20px; }
+.task-title-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.task-title-row .task-title { min-width: 0; }
+.priority-badge { display: inline-flex; flex-shrink: 0; justify-content: center; align-items: center; min-width: 25px; height: 25px; border: 1px solid; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.priority-high { color: #8c3c27; background: #fae9df; border-color: #dab5a2; }
+.priority-medium { color: #63551c; background: #f5f0d8; border-color: #d5cd9e; }
+.priority-low { color: #42614c; background: #e9efe4; border-color: #becdb6; }
+.task-controls { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 12px 20px; }
+.task-controls label { display: flex; align-items: center; gap: 6px; color: #59664f; font-size: 10px; }
+.planner select { min-height: 34px; max-width: 100%; border: 1px solid #bdc9bd; border-radius: 4px; padding: 5px 8px; background: #fffdf5; color: var(--ink); font: inherit; font-size: 12px; }
+.planner select:disabled { opacity: .55; cursor: not-allowed; }
+.task-state-note { margin: 2px 0 10px 20px; color: #71552a; font-size: 10px; line-height: 1.8; }
+.task-card.deferred .bullet-symbol { color: #8c6027; }
+.task-card.canceled .bullet-symbol { color: #8a594e; }
+.task-card.canceled .task-title > :last-child { color: #6e6e64; text-decoration: line-through; }
+.entry-options { display: flex; flex-wrap: wrap; gap: 10px; }
+.entry-options label { flex: 1; min-width: 95px; margin: 0; font-size: 11px; font-weight: 400; }
+.entry-options select { display: block; width: 100%; margin-top: 6px; }
+.symbol-legend { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
+.diary-key .symbol-legend span { padding: 0; font-size: 12px; }
+.task-symbol-guide { color: #59664f; font-size: 11px; line-height: 1.8; margin: -14px 0 22px; }
+.task-symbol-guide summary { cursor: pointer; padding: 5px 0; }
+.task-symbol-guide .symbol-legend { margin-top: 8px; padding: 10px 12px; background: #f0f2e8; border-radius: 4px; }
 .task-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-left: 20px; }
 .task-actions button { background: transparent; font-size: 10px; padding: 5px 9px; min-height: 32px; border-color: #d0d9c5; }
 .empty-state { color: #6c7764; font-size: 11px; line-height: 2; min-height: 120px; margin: 0; padding: 18px 0; background: repeating-linear-gradient(transparent 0, transparent 31px, #e4e7da 31px, #e4e7da 32px); word-break: keep-all; }

@@ -4,11 +4,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { title as normalizeTitle } from "@/domain/rules";
 import { Temporal } from "@js-temporal/polyfill";
 import { DiaryCalendar } from "./diary-calendar";
+import { type TaskPriority, type TaskKind, type TaskStatus, taskPriority, taskKind, taskStatus } from "@/domain/task-options";
 
 export type PlannerSession = { userId: string; timezone: string; settingsVersion: number; serverDate: string; csrfToken: string };
 type PlannerRequest = (path: string, init?: RequestInit) => Promise<Response>;
 const serverRequest: PlannerRequest = (path, init) => fetch(path, init);
-type Task = { id: string; title: string; status: "open" | "completed"; scheduledDate: string | null; isUnprocessed: boolean; version: number };
+type Task = { id: string; title: string; status: TaskStatus; priority: TaskPriority; kind: TaskKind; scheduledDate: string | null; isUnprocessed: boolean; version: number };
+const priorityLabels: Record<TaskPriority, string> = { high: "상", medium: "중", low: "하" };
+const kindLabels: Record<TaskKind, string> = { task: "할 일", appointment: "약속", event: "행사" };
+const kindSymbols: Record<TaskKind, string> = { task: "□", appointment: "△", event: "○" };
+const statusLabels: Record<TaskStatus, string> = { open: "진행 전", completed: "완료", deferred: "미룸", canceled: "취소" };
+const statusSymbols: Record<TaskStatus, string> = { open: "□", completed: "✓", deferred: "→", canceled: "×" };
 type View = "inbox" | "scheduled" | "overdue" | "completed";
 type Page = { items: Task[]; nextCursor: string | null };
 type Pending = { path: string; method: "POST" | "PATCH"; body: object; key: string; version?: number; startedAt: number; ownerId: string };
@@ -27,19 +33,22 @@ function listUrl(view: View, date: string, cursor?: string) {
 }
 function describeChange(body: object): string {
   return ["title" in body ? `제목: ${String(body.title)}` : "", "scheduledDate" in body ? `실행일: ${body.scheduledDate ?? "없음"}` : "",
-    "status" in body ? (body.status === "completed" ? "완료" : "완료 취소") : "",
+    "status" in body ? `상태: ${statusLabels[body.status as TaskStatus]}` : "",
+    "priority" in body ? `우선순위: ${priorityLabels[body.priority as TaskPriority]}` : "",
+    "kind" in body ? `유형: ${kindLabels[body.kind as TaskKind]}` : "",
     "isUnprocessed" in body ? (body.isUnprocessed ? "미정리로 표시" : "정리 완료") : ""].filter(Boolean).join(" · ");
 }
 
 export function Planner({ initialSession, request = serverRequest, demo = false }: { initialSession: PlannerSession; request?: PlannerRequest; demo?: boolean }) {
   const [session, setSession] = useState(initialSession), [pages, setPages] = useState(emptyPages);
   const [draft, setDraft] = useState(""), [message, setMessage] = useState("목록을 불러오는 중입니다.");
+  const [draftPriority, setDraftPriority] = useState<TaskPriority>("medium"), [draftKind, setDraftKind] = useState<TaskKind>("task");
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [locked, setLocked] = useState(false);
   const [pending, setPending] = useState<Pending | null>(null), [conflict, setConflict] = useState<Task | null>(null);
   const [zone, setZone] = useState(initialSession.timezone);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const [editing, setEditing] = useState<{ task: Task; title: string; date: string } | null>(null);
+  const [editing, setEditing] = useState<{ task: Task; title: string; date: string; priority: TaskPriority; kind: TaskKind; status: TaskStatus } | null>(null);
   const currentOwner = useRef(initialSession.userId), operation = useRef(false), loadSequence = useRef(0);
   const calendar = useRef(`${initialSession.timezone}|${initialSession.serverDate}`);
   const statusEpoch = useRef(0);
@@ -53,7 +62,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     if (!response.ok) { if (response.status === 401) { setLocked(true); setPages(emptyPages()); } throw new Error(demo ? "테스트 저장소를 확인할 수 없습니다. 입력을 보존했습니다. 브라우저 저장 설정을 확인하고 다시 시도해주세요." : "로그인 상태를 확인할 수 없습니다. 입력을 보존했습니다. 다시 시도해주세요."); }
     const fresh: PlannerSession = await response.json();
     if (fresh.userId !== currentOwner.current) {
-      currentOwner.current = ""; setPages(emptyPages()); setDraft(""); setEditing(null); setPending(null); setConflict(null); setLocked(true);
+      currentOwner.current = ""; setPages(emptyPages()); setDraft(""); setDraftPriority("medium"); setDraftKind("task"); setEditing(null); setPending(null); setConflict(null); setLocked(true);
       window.location.replace("/"); throw new Error("계정이 변경되어 이전 입력을 지웠습니다.");
     }
     const nextCalendar = `${fresh.timezone}|${fresh.serverDate}`;
@@ -83,10 +92,10 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); window.clearInterval(timer); loadSequence.current++; };
   }, [reload, demo]);
   useEffect(() => {
-    if (!draft && !pending && !editing && zone === session.timezone) return;
+    if (!draft && draftPriority === "medium" && draftKind === "task" && !pending && !editing && zone === session.timezone) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
-  }, [draft, pending, editing, zone, session.timezone]);
+  }, [draft, draftPriority, draftKind, pending, editing, zone, session.timezone]);
 
   async function send(value: Pending) {
     if (operation.current || value.ownerId !== currentOwner.current) return;
@@ -111,17 +120,17 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
       const confirmed = await verifySession();
       if (value.path === "/api/settings") setZone(confirmed.timezone);
       setPending(null); setConflict(null);
-      if (value.method === "POST") setDraft("");
+      if (value.method === "POST") { setDraft(""); setDraftPriority("medium"); setDraftKind("task"); }
       setEditing(null); setMessage("status" in value.body && value.body.status === "completed" && selectedDate && selectedDate !== confirmed.serverDate ? `완료했습니다. ${confirmed.serverDate}의 완료 기록에서 확인하세요.` : "저장 완료");
       await reload();
     } catch (cause) { setMessage(serverConfirmed ? "저장 완료 · 목록을 다시 확인해주세요." : "저장 확인 필요"); setError(cause instanceof Error && !(cause instanceof TypeError) ? cause.message : "저장 여부를 확인할 수 없습니다. 입력을 보존했습니다. 같은 요청으로 다시 시도해주세요."); }
     finally { operation.current = false; setBusy(false); }
   }
-  function mutate(path: string, method: Pending["method"], body: object, version?: number) {
-    if (pending || locked) return;
+  function mutate(path: string, method: Pending["method"], body: object, version?: number, fromEditor = false) {
+    if (pending || locked || (editing && !fromEditor)) return;
     void send({ path, method, body, version, key: crypto.randomUUID(), startedAt: Date.now(), ownerId: currentOwner.current });
   }
-  function update(task: Task, body: object) { mutate(`/api/tasks/${task.id}`, "PATCH", body, task.version); }
+  function update(task: Task, body: object, fromEditor = false) { mutate(`/api/tasks/${task.id}`, "PATCH", body, task.version, fromEditor); }
   async function more(view: View) {
     const epoch = statusEpoch.current, sequence = loadSequence.current, selection = selectedDateRef.current;
     try {
@@ -140,7 +149,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     catch (cause) { if (epoch === statusEpoch.current) setError(cause instanceof Error ? cause.message : "목록을 확인해주세요."); }
   }
   async function signOut() {
-    if ((draft || pending || editing || zone !== session.timezone) && !window.confirm(demo ? "저장하지 않은 입력이 있습니다. 테스트를 나가면 입력을 지웁니다. 계속할까요?" : "저장하지 않은 입력이 있습니다. 로그아웃하면 입력을 지웁니다. 계속할까요?")) return;
+    if ((draft || draftPriority !== "medium" || draftKind !== "task" || pending || editing || zone !== session.timezone) && !window.confirm(demo ? "저장하지 않은 입력이 있습니다. 테스트를 나가면 입력을 지웁니다. 계속할까요?" : "저장하지 않은 입력이 있습니다. 로그아웃하면 입력을 지웁니다. 계속할까요?")) return;
     if (operation.current) return;
     operation.current = true; setBusy(true);
     try {
@@ -173,17 +182,20 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
   function taskSection(view: typeof views[number]) { return <section className="task-section" key={view.id} id={`diary-${view.id}`} aria-label={viewLabel(view.id)}>
       <div className="section-heading"><h2>{viewLabel(view.id)}</h2><span className="task-count">{pages[view.id].items.length}{pages[view.id].nextCursor ? "+" : ""}</span></div>
       {!pages[view.id].items.length && <p className="empty-state">{view.id === "scheduled" && !isToday ? "이날에 할 일을 입력함에서 골라보세요." : view.empty}</p>}
-      <ul>{pages[view.id].items.map(task => <li key={task.id} className={task.status === "completed" ? "task-card completed" : "task-card"} data-task-id={task.id}>
-        <p className="task-title"><span className="bullet-symbol" aria-hidden="true">{task.status === "completed" ? "×" : "•"}</span><span>{task.title}</span></p><p className="task-meta">{task.scheduledDate ? `실행일 ${task.scheduledDate}` : "날짜 미정"}{task.isUnprocessed ? " · 미정리" : ""}</p>
-        <div className="task-actions"><button type="button" disabled={disabled} onClick={() => update(task, { status: task.status === "completed" ? "open" : "completed" })}>{task.status === "completed" ? "완료 취소" : "완료"}</button>
-          {task.status === "open" && (view.id !== "scheduled") && <button type="button" disabled={disabled} onClick={() => update(task, { scheduledDate: date.toString(), isUnprocessed: false })}>{isToday ? "오늘로" : "이날로"}</button>}
-          {task.isUnprocessed && <button type="button" disabled={disabled} onClick={() => update(task, { isUnprocessed: false })}>정리 완료</button>}
-          <button type="button" disabled={disabled} onClick={() => setEditing({ task, title: task.title, date: task.scheduledDate ?? "" })}>수정</button></div>
-      </li>)}</ul>{pages[view.id].nextCursor && <button type="button" className="quiet-button" disabled={disabled} onClick={() => void more(view.id)}>더 보기</button>}
+      <ul>{pages[view.id].items.map(task => <li key={task.id} className={`task-card ${task.status}`} data-task-id={task.id}>
+        <div className="task-title-row"><p className="task-title"><span className="bullet-symbol" role="img" aria-label={task.status === "open" ? kindLabels[task.kind] : statusLabels[task.status]}>{task.status === "open" ? kindSymbols[task.kind] : statusSymbols[task.status]}</span><span>{task.title}</span></p><span className={`priority-badge priority-${task.priority}`} role="img" aria-label={`우선순위 ${priorityLabels[task.priority]}`}>{priorityLabels[task.priority]}</span></div>
+        <p className="task-meta">{kindLabels[task.kind]} · {task.scheduledDate ? `실행일 ${task.scheduledDate}` : "날짜 미정"}{task.isUnprocessed ? " · 미정리" : ""}</p>
+        <div className="task-controls"><label>우선순위<select aria-label={`${task.title} 우선순위`} value={task.priority} disabled={navigationDisabled} onChange={event => update(task, { priority: taskPriority(event.target.value) })}>{Object.entries(priorityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>상태<select aria-label={`${task.title} 상태`} value={task.status} disabled={navigationDisabled} onChange={event => update(task, { status: taskStatus(event.target.value) })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{value === "open" ? kindSymbols[task.kind] : statusSymbols[value as TaskStatus]} {label}</option>)}</select></label></div>
+        {task.status === "deferred" && <p className="task-state-note">→ 미룸 · 실행일은 수정에서 변경할 수 있습니다.</p>}
+        <div className="task-actions"><button type="button" disabled={navigationDisabled} onClick={() => update(task, { status: task.status === "completed" ? "open" : task.status === "canceled" ? "open" : "completed" })}>{task.status === "completed" ? "완료 취소" : task.status === "canceled" ? "취소 되돌리기" : "완료"}</button>
+          {(task.status === "open" || task.status === "deferred") && (view.id !== "scheduled") && <button type="button" disabled={navigationDisabled} onClick={() => update(task, { scheduledDate: date.toString(), isUnprocessed: false })}>{isToday ? "오늘로" : "이날로"}</button>}
+          {task.isUnprocessed && (task.scheduledDate !== null || task.status === "completed") && <button type="button" disabled={navigationDisabled} onClick={() => update(task, { isUnprocessed: false })}>정리 완료</button>}
+          <button type="button" disabled={navigationDisabled} onClick={() => setEditing({ task, title: task.title, date: task.scheduledDate ?? "", priority: task.priority, kind: task.kind, status: task.status })}>수정</button></div>
+      </li>)}</ul>{pages[view.id].nextCursor && <button type="button" className="quiet-button" disabled={navigationDisabled} onClick={() => void more(view.id)}>더 보기</button>}
     </section>; }
   return <main id="main" className="planner diary-app">
     <div className="diary-toolbar"><div><p className="eyebrow">A PAGE FOR EVERY DAY</p><p className="diary-title">나의 다이어리<span className="diary-edition">{date.year} EDITION</span></p></div>
-      <div className="diary-toolbar-actions"><button className="quick-entry" type="button" disabled={disabled} onClick={() => captureInput.current?.focus()}>＋ 빠른 입력</button><button className="quiet-button" type="button" disabled={busy} onClick={() => void signOut()}>{demo ? "테스트 나가기" : "로그아웃 / 계정 바꾸기"}</button></div></div>
+      <div className="diary-toolbar-actions"><button className="quick-entry" type="button" disabled={navigationDisabled} onClick={() => captureInput.current?.focus()}>＋ 빠른 입력</button><button className="quiet-button" type="button" disabled={busy} onClick={() => void signOut()}>{demo ? "테스트 나가기" : "로그아웃 / 계정 바꾸기"}</button></div></div>
     {demo && <aside className="demo-notice" aria-label="테스트 모드 안내"><strong>테스트 다이어리</strong><p className="demo-notice-detail">이 탭에 임시 저장됩니다. 새로고침 후에도 유지되며 다른 기기와 동기화되지 않습니다.</p></aside>}
     <div className="diary-shell">
       <aside id="diary-navigation" className={`diary-sidebar${calendarOpen ? " is-open" : ""}`} aria-label="다이어리 탐색">
@@ -194,7 +206,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
           <a href="#diary-completed"><span>03</span>완료 기록<span aria-hidden="true">↗</span></a>
           <a href="#diary-overdue"><span>04</span>미뤄둔 일<span aria-hidden="true">↗</span></a>
         </nav>
-        <div className="diary-key"><p className="sidebar-label">작은 기록의 기호</p><p><span>•</span> 해야 할 일 <span>×</span> 마친 일</p><p className="diary-quote">한 페이지씩,<br />나에게 중요한 하루를.</p></div>
+        <div className="diary-key"><p className="sidebar-label">작은 기록의 기호</p><div className="symbol-legend"><span>□ 할 일</span><span>✓ 완료</span><span>△ 약속</span><span>→ 미룸</span><span>○ 행사</span><span>× 취소</span></div><p className="diary-quote">한 페이지씩,<br />나에게 중요한 하루를.</p></div>
       </aside>
       <div className="diary-content">
         <div className="diary-page-navigation"><p className="diary-current-date">{date.year}년 {date.month}월 {date.day}일 <span>{isToday ? "오늘의 페이지" : "선택한 페이지"}</span></p>
@@ -203,18 +215,21 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
     <div className="planner-notice"><p className="save-status" role="status" aria-live="polite">{message}</p><button type="button" className="quiet-button" disabled={busy} onClick={() => void refreshPage()}>목록 새로고침</button></div>
     {error && <p role="alert" className="error-note">{error}</p>}
     {pending && !conflict && <div className="recovery"><p>입력과 저장 요청을 이 화면에 보관하고 있습니다.</p><button type="button" disabled={busy || locked} onClick={() => void send(pending)}>같은 요청 재시도</button><button type="button" disabled={busy} onClick={() => { if (window.confirm("목록에서 저장 여부를 확인했나요? 확인을 마치면 이전 요청을 닫습니다.")) { setPending(null); setMessage("이전 요청을 닫았습니다. 목록과 입력을 확인해주세요."); } }}>목록 확인 후 요청 닫기</button></div>}
-    {conflict && pending && <section className="recovery" aria-label="수정 충돌 확인"><h2>최신 내용과 비교</h2><p>현재 저장된 제목: {conflict.title}</p><p>현재 상태: {conflict.status === "completed" ? "완료" : "미완료"} · 실행일: {conflict.scheduledDate ?? "없음"}</p>
+    {conflict && pending && <section className="recovery" aria-label="수정 충돌 확인"><h2>최신 내용과 비교</h2><p>현재 저장된 제목: {conflict.title}</p><p>현재 상태: {statusLabels[conflict.status]} · 실행일: {conflict.scheduledDate ?? "없음"} · 우선순위: {priorityLabels[conflict.priority]} · 유형: {kindLabels[conflict.kind]}</p>
       <p>내 변경: {describeChange(pending.body)}</p>
       <button type="button" onClick={() => { setPending(null); setConflict(null); setEditing(null); void reload().catch(cause => setError(cause.message)); }}>최신 내용 사용</button>
       <button type="button" onClick={() => { const retry = { ...pending, key: crypto.randomUUID(), version: conflict.version, startedAt: Date.now() }; setConflict(null); void send(retry); }}>내 변경 다시 적용</button></section>}
-    {editing && <form className="edit-panel" onSubmit={event => { event.preventDefault(); try { update(editing.task, { title: normalizeTitle(editing.title), scheduledDate: editing.date || null }); } catch { setError("제목과 날짜를 확인해주세요."); } }}>
+    {editing && <form className="edit-panel" onSubmit={event => { event.preventDefault(); try { update(editing.task, { title: normalizeTitle(editing.title), scheduledDate: editing.date || null, priority: editing.priority, kind: editing.kind, status: editing.status }, true); } catch { setError("제목과 날짜를 확인해주세요."); } }}>
       <h2>할 일 수정</h2><label>제목<input ref={editInput} value={editing.title} disabled={disabled} onChange={event => setEditing({ ...editing, title: event.target.value })} /></label>
       <label>실행 예정일<input type="date" value={editing.date} disabled={disabled} onChange={event => setEditing({ ...editing, date: event.target.value })} /></label>
+      <div className="entry-options"><label>유형<select aria-label="유형" value={editing.kind} disabled={disabled} onChange={event => setEditing({ ...editing, kind: taskKind(event.target.value) })}>{Object.entries(kindLabels).map(([value, label]) => <option key={value} value={value}>{kindSymbols[value as TaskKind]} {label}</option>)}</select></label><label>우선순위<select aria-label="우선순위" value={editing.priority} disabled={disabled} onChange={event => setEditing({ ...editing, priority: taskPriority(event.target.value) })}>{Object.entries(priorityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label>진행 상태<select aria-label="진행 상태" value={editing.status} disabled={disabled} onChange={event => setEditing({ ...editing, status: taskStatus(event.target.value) })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{value === "open" ? kindSymbols[editing.kind] : statusSymbols[value as TaskStatus]} {label}</option>)}</select></label></div>
+      <p className="field-note">미룸은 상태 표시입니다. 날짜를 옮기려면 실행 예정일도 변경해주세요.</p>
       <button type="submit" disabled={disabled}>변경 저장</button><button type="button" disabled={busy} onClick={() => setEditing(null)}>수정 닫기</button></form>}
     <div className="diary-book">
       <div className="diary-page diary-page-left">
         <header className="diary-day-heading"><span className="diary-day-number">{String(date.day).padStart(2, "0")}</span><div><p className="diary-weekday">{["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"][date.dayOfWeek - 1]} · {date.month}월</p><h1>{isToday ? "오늘을 가볍게." : "하루를 차분하게."}</h1><p className="date-line">{date.toString()} · {session.timezone}</p></div></header>
         <p className="page-intention">모든 일을 끝내기보다, 중요한 일에 한 걸음.</p>
+        <details className="task-symbol-guide"><summary>기호 안내</summary><div className="symbol-legend"><span>□ 할 일</span><span>✓ 완료</span><span>△ 약속</span><span>→ 미룸</span><span>○ 행사</span><span>× 취소</span></div></details>
         {taskSection(views[0])}
         {taskSection(views[3])}
         <p className="completion-note">완료한 일은 실제로 마친 날짜의 기록에 모입니다.</p>
@@ -222,9 +237,10 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
       </div>
       <div className="diary-page diary-page-right">
         <header className="diary-capture-heading"><p className="eyebrow">CAPTURE & ORGANIZE</p><h2>생각을 한곳에.</h2><p>떠오르면 적고, 준비되면 하루에 놓아두세요.</p></header>
-    <form className="capture" onSubmit={event => { event.preventDefault(); try { mutate("/api/tasks", "POST", { title: normalizeTitle(draft) }); } catch { setError("제목은 줄바꿈 없이 1~200자로 입력해주세요."); } }}>
-      <label htmlFor="capture-title">지금 떠오른 일</label><div className="capture-row"><input ref={captureInput} id="capture-title" value={draft} disabled={disabled} aria-invalid={Boolean(draftError)} aria-describedby={draftError ? "capture-error" : "capture-help"} onChange={event => setDraft(event.target.value)} placeholder="제목 하나면 충분해요" autoComplete="off" />
-        <button type="submit" disabled={disabled || !draft.trim() || Boolean(draftError)}>입력함에 저장</button></div><p id="capture-help" className="field-note">목표와 날짜는 나중에 정해도 괜찮아요.</p>{draftError && <p id="capture-error" role="alert" className="error-note">{draftError}</p>}</form>
+    <form className="capture" onSubmit={event => { event.preventDefault(); try { mutate("/api/tasks", "POST", { title: normalizeTitle(draft), priority: draftPriority, kind: draftKind }); } catch { setError("제목은 줄바꿈 없이 1~200자로 입력해주세요."); } }}>
+      <label htmlFor="capture-title">지금 떠오른 일</label><div className="capture-row"><input ref={captureInput} id="capture-title" value={draft} disabled={navigationDisabled} aria-invalid={Boolean(draftError)} aria-describedby={draftError ? "capture-error" : "capture-help"} onChange={event => setDraft(event.target.value)} placeholder="제목 하나면 충분해요" autoComplete="off" />
+        <div className="entry-options"><label>유형<select aria-label="새 항목 유형" value={draftKind} disabled={navigationDisabled} onChange={event => setDraftKind(taskKind(event.target.value))}>{Object.entries(kindLabels).map(([value, label]) => <option key={value} value={value}>{kindSymbols[value as TaskKind]} {label}</option>)}</select></label><label>우선순위<select aria-label="새 항목 우선순위" value={draftPriority} disabled={navigationDisabled} onChange={event => setDraftPriority(taskPriority(event.target.value))}>{Object.entries(priorityLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
+        <button type="submit" disabled={navigationDisabled || !draft.trim() || Boolean(draftError)}>입력함에 저장</button></div><p id="capture-help" className="field-note">목표와 날짜는 나중에 정해도 괜찮아요.</p>{draftError && <p id="capture-error" role="alert" className="error-note">{draftError}</p>}</form>
 
         {taskSection(views[1])}
         {taskSection(views[2])}
@@ -232,7 +248,7 @@ export function Planner({ initialSession, request = serverRequest, demo = false 
       </div>
     </div>
     <details className="timezone-panel"><summary>기준 시간대 설정 · {session.timezone}</summary><form onSubmit={event => { event.preventDefault(); mutate("/api/settings", "PATCH", { timezone: zone }, session.settingsVersion); }}>
-      <label htmlFor="timezone">IANA 시간대</label><input id="timezone" value={zone} disabled={disabled} onChange={event => setZone(event.target.value)} placeholder="Asia/Seoul" /><button disabled={disabled} type="submit">시간대 적용</button><p className="timezone-help">기존 실행일은 유지하고, 오늘의 기준과 완료 기록 표시를 바꿉니다.</p></form></details>
+      <label htmlFor="timezone">IANA 시간대</label><input id="timezone" value={zone} disabled={navigationDisabled} onChange={event => setZone(event.target.value)} placeholder="Asia/Seoul" /><button disabled={navigationDisabled} type="submit">시간대 적용</button><p className="timezone-help">기존 실행일은 유지하고, 오늘의 기준과 완료 기록 표시를 바꿉니다.</p></form></details>
       </div>
     </div>
   </main>;

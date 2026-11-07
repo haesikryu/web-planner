@@ -15,6 +15,13 @@
       "when": 1794016304789,
       "tag": "0001_active_completion_constraint",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794055563761,
+      "tag": "0002_task_priority_kind_and_status",
+      "breakpoints": true
     }
   ]
 }

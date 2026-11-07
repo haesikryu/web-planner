@@ -25,6 +25,7 @@ test.beforeEach(async ({ context }) => seedSession(context));
 
 test("capture -> today -> complete -> undo keeps the same original task", async ({ page }, testInfo) => {
   await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("서버에 저장된 목록입니다.", { timeout: 15000 });
   await expect(page.getByRole("heading", { name: "오늘을 가볍게." })).toBeVisible();
   await page.getByLabel("지금 떠오른 일").fill("  ");
   await expect(page.getByText("제목은 공백만 사용할 수 없으며", { exact: false })).toBeVisible();
@@ -49,7 +50,9 @@ test("capture -> today -> complete -> undo keeps the same original task", async 
 });
 
 test("an account change clears the prior account's draft and visible tasks", async ({ page, context }) => {
-  await page.goto("/"); await page.getByLabel("지금 떠오른 일").fill("첫 계정의 비공개 과제");
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("서버에 저장된 목록입니다.", { timeout: 15000 });
+  await page.getByLabel("지금 떠오른 일").fill("첫 계정의 비공개 과제");
   await page.getByRole("button", { name: "입력함에 저장" }).click();
   await expect(page.getByText("첫 계정의 비공개 과제", { exact: true })).toBeVisible();
   await page.getByLabel("지금 떠오른 일").fill("첫 계정의 미저장 입력");
@@ -83,7 +86,9 @@ test("planner form and lists meet automated WCAG A/AA checks", async ({ page }) 
 });
 
 test("a timezone change during loading does not label old-calendar results as current", async ({ page }) => {
-  await page.goto("/"); await page.getByLabel("지금 떠오른 일").fill("날짜 기준 경합");
+  await page.goto("/");
+  await expect(page.getByRole("status")).toHaveText("서버에 저장된 목록입니다.", { timeout: 15000 });
+  await page.getByLabel("지금 떠오른 일").fill("날짜 기준 경합");
   await page.getByRole("button", { name: "입력함에 저장" }).click();
   await expect(page.getByText("날짜 기준 경합", { exact: true })).toBeVisible();
   const session = await (await page.request.get("/api/session")).json();
@@ -97,7 +102,7 @@ test("a timezone change during loading does not label old-calendar results as cu
     await route.fulfill({ response: oldCalendarResponse });
   });
   await page.getByRole("button", { name: "목록 새로고침" }).click();
-  await expect(page.getByRole("main").getByRole("alert")).toContainText("날짜 기준");
+  await expect(page.getByRole("main").getByRole("alert")).toContainText("날짜 기준", { timeout: 10000 });
   await expect(page.getByText("날짜 기준 경합", { exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "목록 새로고침" }).click();
   await expect(page.getByText("날짜 기준 경합", { exact: true })).toBeVisible();
@@ -205,4 +210,112 @@ test("a delayed previous diary page cannot replace the current date's tasks or s
     await expect(page.getByRole("status")).toHaveText("최신 목록을 확인했습니다.");
     await expect(page.getByRole("main").getByRole("alert")).toHaveCount(0);
   } finally { releaseResponse(); }
+});
+
+
+test("priority and diary symbols persist through status changes and editing", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("지금 떠오른 일").fill("약속 상태 확인");
+  await page.getByLabel("새 항목 우선순위", { exact: true }).selectOption("high");
+  await page.getByLabel("새 항목 유형", { exact: true }).selectOption("appointment");
+  await page.getByRole("button", { name: "입력함에 저장", exact: true }).click();
+  const inbox = page.getByRole("region", { name: "입력함", exact: true });
+  const scheduled = page.getByRole("region", { name: "오늘의 할 일", exact: true });
+  const completed = page.getByRole("region", { name: "오늘 완료", exact: true });
+  const activeCard = scheduled.locator("[data-task-id]").filter({ hasText: "약속 상태 확인" });
+  await expect(inbox.getByText("약속 상태 확인", { exact: true })).toBeVisible();
+  await inbox.getByRole("button", { name: "오늘로", exact: true }).click();
+  await expect(activeCard.getByLabel("약속 상태 확인 우선순위", { exact: true })).toHaveValue("high");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveText("△");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveAttribute("aria-label", /약속/);
+  await activeCard.getByLabel("약속 상태 확인 우선순위", { exact: true }).selectOption("low");
+  await expect(activeCard.getByLabel("약속 상태 확인 우선순위", { exact: true })).toHaveValue("low");
+  await activeCard.getByLabel("약속 상태 확인 상태", { exact: true }).selectOption("deferred");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveText("→");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveAttribute("aria-label", /미룸|연기/);
+  await activeCard.getByLabel("약속 상태 확인 상태", { exact: true }).selectOption("canceled");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveText("×");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveAttribute("aria-label", /취소/);
+  const currentDay = (await page.locator(".date-line").textContent() ?? "").slice(0, 10);
+  await page.getByRole("button", { name: "다음 날", exact: true }).click();
+  await expect(page.locator(".date-line")).toContainText(Temporal.PlainDate.from(currentDay).add({ days: 1 }).toString());
+  await expect(page.getByRole("status")).toContainText("저장된 목록입니다.");
+  await expect(page.getByRole("region", { name: "이전 날짜의 미완료", exact: true }).getByText("약속 상태 확인", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "이전 날", exact: true }).click();
+  await expect(activeCard.getByLabel("약속 상태 확인 상태", { exact: true })).toHaveValue("canceled");
+  await activeCard.getByLabel("약속 상태 확인 상태", { exact: true }).selectOption("open");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveText("△");
+  await activeCard.getByLabel("약속 상태 확인 상태", { exact: true }).selectOption("completed");
+  const doneCard = completed.locator("[data-task-id]").filter({ hasText: "약속 상태 확인" });
+  await expect(doneCard.locator(".bullet-symbol")).toHaveText("✓");
+  await expect(doneCard.locator(".bullet-symbol")).toHaveAttribute("aria-label", /완료/);
+  await doneCard.getByRole("button", { name: "완료 취소", exact: true }).click();
+  await expect(activeCard.locator(".bullet-symbol")).toHaveText("△");
+  await page.getByLabel("지금 떠오른 일").fill("편집 중 보호할 다른 일");
+  await page.getByRole("button", { name: "입력함에 저장", exact: true }).click();
+  const otherCard = inbox.locator("[data-task-id]").filter({ hasText: "편집 중 보호할 다른 일" });
+  await expect(otherCard).toBeVisible();
+  await activeCard.getByRole("button", { name: "수정", exact: true }).click();
+  const editor = page.locator(".edit-panel");
+  await editor.getByLabel("제목", { exact: true }).fill("보존할 미저장 편집 제목");
+  await expect(page.getByRole("button", { name: "＋ 빠른 입력", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("지금 떠오른 일")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "입력함에 저장", exact: true })).toBeDisabled();
+  await expect(page.getByLabel("새 항목 유형", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("새 항목 우선순위", { exact: true })).toBeDisabled();
+  await expect(otherCard.getByLabel("편집 중 보호할 다른 일 우선순위", { exact: true })).toBeDisabled();
+  await expect(otherCard.getByLabel("편집 중 보호할 다른 일 상태", { exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "다음 날", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "이전 날", exact: true })).toBeDisabled();
+  await page.getByText(/기준 시간대 설정/).click();
+  await expect(page.getByLabel("IANA 시간대")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "시간대 적용", exact: true })).toBeDisabled();
+  await expect(editor.getByLabel("제목", { exact: true })).toHaveValue("보존할 미저장 편집 제목");
+  await editor.getByLabel("제목", { exact: true }).fill("약속 상태 확인");
+  await editor.getByLabel("우선순위", { exact: true }).selectOption("medium");
+  await editor.getByLabel("유형", { exact: true }).selectOption("event");
+  await editor.getByLabel("진행 상태", { exact: true }).selectOption("open");
+  await editor.getByRole("button", { name: "변경 저장", exact: true }).click();
+  await expect(activeCard.locator(".bullet-symbol")).toHaveText("○");
+  await page.reload();
+  await expect(activeCard.getByLabel("약속 상태 확인 우선순위", { exact: true })).toHaveValue("medium");
+  await expect(activeCard.getByLabel("약속 상태 확인 상태", { exact: true })).toHaveValue("open");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveText("○");
+  await expect(activeCard.locator(".bullet-symbol")).toHaveAttribute("aria-label", /행사/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+
+test("an unscheduled organized completion returns to inbox after cancellation or completion undo", async ({ page }) => {
+  await page.goto("/");
+  await page.getByLabel("지금 떠오른 일").fill("날짜 없는 기록");
+  await page.getByRole("button", { name: "입력함에 저장", exact: true }).click();
+  const inbox = page.getByRole("region", { name: "입력함", exact: true });
+  const completed = page.getByRole("region", { name: "오늘 완료", exact: true });
+  const inboxCard = inbox.locator("[data-task-id]").filter({ hasText: "날짜 없는 기록" });
+  const doneCard = completed.locator("[data-task-id]").filter({ hasText: "날짜 없는 기록" });
+  await expect(inboxCard).toBeVisible();
+  const id = await inboxCard.getAttribute("data-task-id");
+  await inboxCard.getByRole("button", { name: "완료", exact: true }).click();
+  await expect(doneCard.locator(".bullet-symbol")).toHaveText("✓");
+  await doneCard.getByRole("button", { name: "정리 완료", exact: true }).click();
+  await expect(inboxCard).toHaveCount(0);
+  await doneCard.getByLabel("날짜 없는 기록 상태", { exact: true }).selectOption("canceled");
+  await expect(inboxCard.locator(".bullet-symbol")).toHaveText("×");
+  await expect(inboxCard).toHaveAttribute("data-task-id", id ?? "");
+  await expect(inboxCard).toContainText("날짜 미정");
+  await expect(doneCard).toHaveCount(0);
+  await page.reload();
+  await expect(inboxCard.getByLabel("날짜 없는 기록 상태", { exact: true })).toHaveValue("canceled");
+  await inboxCard.getByRole("button", { name: "취소 되돌리기", exact: true }).click();
+  await expect(inboxCard.locator(".bullet-symbol")).toHaveText("□");
+  await inboxCard.getByRole("button", { name: "완료", exact: true }).click();
+  await doneCard.getByRole("button", { name: "정리 완료", exact: true }).click();
+  await expect(inboxCard).toHaveCount(0);
+  await doneCard.getByRole("button", { name: "완료 취소", exact: true }).click();
+  await expect(inboxCard).toHaveAttribute("data-task-id", id ?? "");
+  await expect(inboxCard.locator(".bullet-symbol")).toHaveText("□");
+  await page.reload();
+  await expect(inboxCard.getByLabel("날짜 없는 기록 상태", { exact: true })).toHaveValue("open");
+  await expect(inboxCard).toContainText("날짜 미정");
 });

@@ -1,11 +1,14 @@
 import { calendarDate, dayRange, InputError, object, title, timezone, today, uuidPattern } from "../../domain/rules";
+import { type TaskKind, type TaskPriority, type TaskStatus, taskKind, taskPriority, taskStatus } from "../../domain/task-options";
 import type { PlannerSession } from "../planner";
 
 const STORAGE_KEY = "web-planner:demo:v1";
 type DemoTask = {
   id: string;
   title: string;
-  status: "open" | "completed";
+  status: TaskStatus;
+  priority: TaskPriority;
+  kind: TaskKind;
   scheduledDate: string | null;
   isUnprocessed: boolean;
   version: number;
@@ -13,7 +16,7 @@ type DemoTask = {
   updatedAt: string;
   completedAt: string | null;
 };
-type DemoState = { schemaVersion: 1; timezone: string; settingsVersion: number; tasks: DemoTask[] };
+type DemoState = { schemaVersion: 2; timezone: string; settingsVersion: number; tasks: DemoTask[] };
 type DemoStorage = Pick<Storage, "getItem" | "setItem">;
 
 class DemoRequestError extends Error {
@@ -32,20 +35,23 @@ function timestamp(value: unknown): value is string {
 
 function readState(storage: DemoStorage): DemoState {
   const stored = storage.getItem(STORAGE_KEY);
-  if (stored === null) return { schemaVersion: 1, timezone: "Asia/Seoul", settingsVersion: 1, tasks: [] };
+  if (stored === null) return { schemaVersion: 2, timezone: "Asia/Seoul", settingsVersion: 1, tasks: [] };
   try {
-    const state = JSON.parse(stored) as DemoState;
-    if (state.schemaVersion !== 1 || !positiveInteger(state.settingsVersion) || timezone(state.timezone) !== state.timezone || !Array.isArray(state.tasks)) throw new Error();
+    const state = JSON.parse(stored) as Omit<DemoState, "schemaVersion"> & { schemaVersion: 1 | 2 };
+    if (![1, 2].includes(state.schemaVersion) || !positiveInteger(state.settingsVersion) || timezone(state.timezone) !== state.timezone || !Array.isArray(state.tasks)) throw new Error();
     const ids = new Set<string>();
     for (const task of state.tasks) {
+      // Adapt old entries in memory; persist only with the next successful mutation.
+      task.priority = state.schemaVersion === 1 && !("priority" in task) ? "medium" : taskPriority(task.priority);
+      task.kind = state.schemaVersion === 1 && !("kind" in task) ? "task" : taskKind(task.kind);
+      task.status = taskStatus(task.status);
       if (!uuidPattern.test(task.id) || ids.has(task.id) || title(task.title) !== task.title || !positiveInteger(task.version) ||
           typeof task.isUnprocessed !== "boolean" || !timestamp(task.createdAt) || !timestamp(task.updatedAt) ||
           (task.scheduledDate !== null && calendarDate(task.scheduledDate) !== task.scheduledDate) ||
-          (task.status !== "open" && task.status !== "completed") ||
           (task.status === "completed" ? !timestamp(task.completedAt) : task.completedAt !== null)) throw new Error();
       ids.add(task.id);
     }
-    return state;
+    return { ...state, schemaVersion: 2 };
   } catch {
     throw new Error("브라우저의 테스트 저장 데이터가 손상되어 불러올 수 없습니다.");
   }
@@ -83,8 +89,8 @@ function listTasks(state: DemoState, params: URLSearchParams, now: Date) {
   const range = view === "completed" && date ? dayRange(date, state.timezone) : null;
   const items = state.tasks.filter(task => {
     if (view === "inbox") return task.isUnprocessed;
-    if (view === "scheduled") return task.status === "open" && task.scheduledDate === date;
-    if (view === "overdue") return task.status === "open" && task.scheduledDate !== null && task.scheduledDate < (date ?? "");
+    if (view === "scheduled") return task.status !== "completed" && task.scheduledDate === date;
+    if (view === "overdue") return (task.status === "open" || task.status === "deferred") && task.scheduledDate !== null && task.scheduledDate < (date ?? "");
     return task.status === "completed" && task.completedAt !== null && range !== null &&
       Date.parse(task.completedAt) >= range.start.getTime() && Date.parse(task.completedAt) < range.end.getTime();
   });
@@ -111,9 +117,10 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
       if (method === "POST" && url.pathname === "/api/logout") return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
       if (method === "GET" && url.pathname === "/api/tasks") return json(listTasks(state, url.searchParams, instant));
       if (method === "POST" && url.pathname === "/api/tasks") {
-        const input = body(init, ["title", "scheduledDate"]);
+        const input = body(init, ["title", "scheduledDate", "priority", "kind"]);
         const task: DemoTask = {
           id: crypto.randomUUID(), title: title(input.title), status: "open", isUnprocessed: true, version: 1,
+          priority: "priority" in input ? taskPriority(input.priority) : "medium", kind: "kind" in input ? taskKind(input.kind) : "task",
           scheduledDate: input.scheduledDate == null ? null : calendarDate(input.scheduledDate),
           createdAt: instant.toISOString(), updatedAt: instant.toISOString(), completedAt: null
         };
@@ -137,21 +144,26 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
       if (!task) return json({ code: "NOT_FOUND" }, 404);
       if (method === "GET") return json(task, 200, task.version);
       checkVersion(init, task.version);
-      const input = body(init, ["title", "scheduledDate", "isUnprocessed", "status"]);
+      const input = body(init, ["title", "scheduledDate", "isUnprocessed", "status", "priority", "kind"]);
       if (!Object.keys(input).length) throw new InputError("body");
       const next = { ...task };
       if ("title" in input) next.title = title(input.title);
+      if ("priority" in input) next.priority = taskPriority(input.priority);
+      if ("kind" in input) next.kind = taskKind(input.kind);
       if ("scheduledDate" in input) next.scheduledDate = input.scheduledDate === null ? null : calendarDate(input.scheduledDate);
       if ("isUnprocessed" in input) {
         if (typeof input.isUnprocessed !== "boolean") throw new InputError("isUnprocessed");
         next.isUnprocessed = input.isUnprocessed;
       }
       if ("status" in input) {
-        if (input.status !== "open" && input.status !== "completed") throw new InputError("status");
-        next.status = input.status;
+        next.status = taskStatus(input.status);
         if (next.status !== task.status) next.completedAt = next.status === "completed" ? instant.toISOString() : null;
       }
-      const changed = Object.keys(input).some(field => next[field as keyof DemoTask] !== task[field as keyof DemoTask]);
+      if (next.status !== "completed" && next.scheduledDate === null) {
+        if (input.isUnprocessed === false) throw new InputError("isUnprocessed");
+        next.isUnprocessed = true;
+      }
+      const changed = next.isUnprocessed !== task.isUnprocessed || Object.keys(input).some(field => next[field as keyof DemoTask] !== task[field as keyof DemoTask]);
       if (changed) {
         next.version++;
         next.updatedAt = instant.toISOString();

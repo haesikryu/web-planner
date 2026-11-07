@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Web Planner FEAT-001 API",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "description": "FEAT-001 실행 계약. 인증·설정·과제 API와 입력함·오늘·완료 취소를 구현했으며 실제 Google 공급자 검증과 배포는 대기 중이다."
   },
   "security": [
@@ -178,7 +178,7 @@
       "get": {
         "operationId": "listTasks",
         "summary": "현재 사용자의 과제 목록",
-        "description": "view=inbox는 상태와 관계없이 isUnprocessed=true. scheduled는 open이며 실행일=date. overdue는 open이며 실행일<date. completed는 현재 유효 완료 시각이 계정 시간대의 date에 속함. inbox에서는 date를 생략하고 다른 view에서는 필수로 지정한다. 잘못된 조합은 422. 정렬은 생성 시각 오름차순·ID, completed는 완료 시각 내림차순·ID. 페이지는 스냅샷이 아니므로 변경 후 재조회한다.",
+        "description": "view=inbox는 상태와 관계없이 isUnprocessed=true. scheduled는 completed를 제외한 상태이며 실행일=date로 취소 표시도 유지한다. overdue는 open/deferred이며 실행일<date. completed는 현재 유효 완료 시각이 계정 시간대의 date에 속함. inbox에서는 date를 생략하고 다른 view에서는 필수로 지정한다. 잘못된 조합은 422. 정렬은 생성 시각 오름차순·ID, completed는 완료 시각 내림차순·ID. 페이지는 스냅샷이 아니므로 변경 후 재조회한다.",
         "parameters": [
           {
             "name": "view",
@@ -382,7 +382,7 @@
       "patch": {
         "operationId": "patchTask",
         "summary": "제목·실행일·정리 상태·완료 변경",
-        "description": "첫 기능은 open/completed만 변경. completed→open은 완료 취소이며 이전 완료 활동을 무효화한다. 속성 생략은 유지, scheduledDate=null은 날짜 해제. 날짜 변경은 마감일에 영향 없음. 동일 값 변경은 새 버전·활동 없음. 같은 키 재생은 버전 검사 전 처리하며 사용자 소유권은 먼저 확인한다.",
+        "description": "상태 open/completed/deferred/canceled와 우선순위 high/medium/low, 유형 task/appointment/event를 변경한다. completed에서 어떤 다른 상태로 이동해도 완료 시각과 이전 유효 완료 활동을 무효화한다. 미룸은 상태 표시만 바꾸며 날짜 이동은 scheduledDate를 명시한다. 속성 생략은 유지, scheduledDate=null은 날짜 해제. 날짜 변경은 마감일에 영향 없음. 동일 값 변경은 새 버전·활동 없음. 같은 키 재생은 버전 검사 전 처리하며 사용자 소유권은 먼저 확인한다. 변경 결과가 날짜 없는 비완료 항목이면 입력함 접근을 유지하도록 isUnprocessed=true를 보충한다. 이 조건에서 명시적인 isUnprocessed=false는 422이며, 서버 보충값은 원래 요청의 재생 해시에 포함하지 않는다.",
         "parameters": [
           {
             "$ref": "#/components/parameters/TaskId"
@@ -532,8 +532,11 @@
             "type": "string",
             "enum": [
               "open",
-              "completed"
-            ]
+              "completed",
+              "deferred",
+              "canceled"
+            ],
+            "description": "미완료, 완료(✓), 미룸(→), 취소(×). 미룸은 표시만 바꾸며 실행일은 유지한다."
           },
           "scheduledDate": {
             "type": [
@@ -572,6 +575,24 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "description": "우선순위: 상·중·하. 생략한 신규 과제는 medium."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "task",
+              "appointment",
+              "event"
+            ],
+            "description": "기호 유형: 할 일(□), 약속(△), 행사(○). 생략한 신규 과제는 task."
           }
         },
         "required": [
@@ -584,7 +605,9 @@
           "completedAt",
           "version",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "priority",
+          "kind"
         ]
       },
       "CreateTask": {
@@ -604,6 +627,26 @@
             ],
             "format": "date",
             "default": null
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "description": "우선순위: 상·중·하. 생략한 신규 과제는 medium.",
+            "default": "medium"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "task",
+              "appointment",
+              "event"
+            ],
+            "description": "기호 유형: 할 일(□), 약속(△), 행사(○). 생략한 신규 과제는 task.",
+            "default": "task"
           }
         },
         "required": [
@@ -631,11 +674,33 @@
             "type": "string",
             "enum": [
               "open",
-              "completed"
-            ]
+              "completed",
+              "deferred",
+              "canceled"
+            ],
+            "description": "미완료, 완료(✓), 미룸(→), 취소(×). 미룸은 표시만 바꾸며 실행일은 유지한다."
           },
           "isUnprocessed": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "변경 결과가 completed가 아니고 scheduledDate=null이면 false 지정은 422. 생략하면 true로 보충하여 입력함에 남긴다."
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ],
+            "description": "우선순위: 상·중·하. 생략한 신규 과제는 medium."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "task",
+              "appointment",
+              "event"
+            ],
+            "description": "기호 유형: 할 일(□), 약속(△), 행사(○). 생략한 신규 과제는 task."
           }
         },
         "required": [],

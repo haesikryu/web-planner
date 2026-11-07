@@ -1,19 +1,19 @@
 # 첫 기능 논리 데이터 설계
 
-상태: PostgreSQL·Drizzle 실행 스키마와 초기 SQL 마이그레이션 구현, 격리 DB 검증 완료. 실제 PostgreSQL 18 서버 통합은 대기 중이다.
+상태: PostgreSQL·Drizzle 실행 스키마와 SQL 마이그레이션 구현. 각 변경의 실제 PostgreSQL·격리 DB 검증 결과는 최신 검증 기록을 따른다.
 
 | 엔터티 | 핵심 필드 | 제약 |
 |---|---|---|
 | users | id, timezone, created_at | timezone은 검증된 IANA ID |
 | identities | user_id, provider_id, subject | google 공급자·고정 issuer 검증, provider_id·subject 유일, 이메일 자동 병합 금지 |
 | sessions | id, token_hash, user_id, created_at, updated_at, expires_at | bearer 원문은 해시 저장. updated_at은 마지막 활동, created_at은 절대 만료 기준. CSRF는 세션 ID와 서버 비밀로 도출 |
-| tasks | id, owner_id, title, status, scheduled_date, due_date, is_unprocessed, completed_at, version, created_at, updated_at | owner 필수, title 규칙, version 양수 |
-| task_activities | id, owner_id, task_id, type, occurred_at, invalidated_by | 완료·완료취소·실행일변경·정리 상태변경 기록 |
+| tasks | id, owner_id, title, priority, kind, status, scheduled_date, due_date, is_unprocessed, completed_at, version, created_at, updated_at | owner 필수, title 규칙, version 양수 |
+| task_activities | id, owner_id, task_id, type, occurred_at, invalidated_by | 완료·완료취소·미룸·취소·복원·실행일·정리·우선순위·유형 변경 기록 |
 | idempotency_records | owner_id, method, path, key, request_hash, state, response, expires_at | owner·method·path·key 유일 |
 
-tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. 첫 기능의 due_date는 원문 보존용 nullable 필드이며 이 기능 API에서 신규 지정·변경하지 않는다. 후속 명세에서 추가한다. status는 첫 기능 open·completed만 사용하며 보류·취소 확대 시 마이그레이션한다.
+tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. 첫 기능의 due_date는 원문 보존용 nullable 필드이며 이 기능 API에서 신규 지정·변경하지 않는다. 후속 명세에서 추가한다. status는 open·completed·deferred·canceled다. 우선순위 priority는 high·medium·low(상·중·하), 유형 kind는 task·appointment·event(할 일·약속·행사)다. 기존·신규 과제의 기본값은 medium·task이며 세 번째 마이그레이션이 기존 제목·날짜·버전을 보존한 채 필드를 추가한다.
 
-완료 상태는 completed_at 존재 여부와 일치한다. 완료 취소는 completed_at을 비우고 이전 완료 활동을 새 취소 활동과 연결한다. 활동 행은 과제 소유자와 같은 owner를 강제하며 다른 사용자의 과제를 연결하지 않는다.
+완료 상태는 completed_at 존재 여부와 일치한다. completed에서 어느 다른 상태로 이동해도 completed_at을 비우고 이전 완료 활동을 completion_undone 활동과 연결한다. canceled·deferred에서 다시 completed로 전환하면 새로운 완료 활동을 생성하며 유효 완료 활동은 하나만 남는다. 미룸은 상태 표시만 변경하고 실행일을 유지하며, 날짜 변경은 별도 명시적 수정으로 처리한다. 취소는 삭제가 아니므로 같은 날짜에서 표시하고 open으로 복원할 수 있다. 활동 행은 과제 소유자와 같은 owner를 강제하며 다른 사용자의 과제를 연결하지 않는다.
 
 ## 원자적 쓰기
 
@@ -34,6 +34,14 @@ tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instan
 
 ## 보관과 운영
 
-실행 기준은 `src/server/db/schema.ts`와 migrations의 두 SQL이다. users는 검증된 기기 시간대·설정 버전 1로 생성하며 제안이 없으면 UTC다. identities는 공급자 토큰·비밀번호 저장을 CHECK로 차단한다. verifications의 10분 state·PKCE는 라이브러리가 일회 소비한다. T-005의 Unicode 제목·시간대 규칙을 API와 화면에서 공유한다. 두 번째 마이그레이션은 과제당 현재 유효 완료 활동 하나와 양수 설정 버전을 강제한다. db:prune으로 만료 기록을 제한된 묶음으로 정리하며 운영 주기는 T-011에서 정한다.
+실행 기준은 `src/server/db/schema.ts`와 migrations의 SQL 이력이다. users는 검증된 기기 시간대·설정 버전 1로 생성하며 제안이 없으면 UTC다. identities는 공급자 토큰·비밀번호 저장을 CHECK로 차단한다. verifications의 10분 state·PKCE는 라이브러리가 일회 소비한다. T-005의 Unicode 제목·시간대 규칙을 API와 화면에서 공유한다. 두 번째 마이그레이션은 과제당 현재 유효 완료 활동 하나와 양수 설정 버전을 강제한다. db:prune으로 만료 기록을 제한된 묶음으로 정리하며 운영 주기는 T-011에서 정한다.
 
 전체 사용자 삭제·휴지통 정책은 FEAT-001의 실행 범위 밖이지만 이후 도입을 막지 않도록 owner 경계를 유지한다. 운영 데이터 내보내기·삭제와 백업 보관 기간은 별도 명세에서 연결한다. 개인정보 본문·제목·토큰·키 응답을 일반 로그에 기록하지 않는다. idempotency 응답 저장소도 개인 데이터이므로 접근 제어와 TTL 정리를 적용한다.
+
+## 우선순위·유형·상태 조회와 호환
+
+- 날짜별 scheduled 조회는 completed를 제외하여 미룸·취소 기호를 유지한다. overdue는 open·deferred만 포함하며 취소 항목은 제외한다. 입력함은 기존 is_unprocessed 규칙을 유지한다.
+- priority·kind 변경도 버전 조건과 요청 재생·소유권 검사를 거치고 활동을 남긴다. 동일 값 변경은 버전과 활동을 늘리지 않는다.
+- 이전 API 요청의 hash를 보존하기 위해 신규 필드가 생략되면 정규화된 요청에 억지로 기본값을 추가하지 않는다. 과거 응답을 재생할 때만 누락된 priority·kind를 medium·task로 보충하며 저장된 원문 응답·버전은 변경하지 않는다.
+
+- PATCH 결과가 날짜 없는 비완료 항목이면 is_unprocessed=true를 보충해 입력함 접근을 보장한다. 명시적인 false 지정은 422로 거절한다. 완료에서 다른 상태로 복원하거나 실행일을 비울 때도 동일하며, 보충값은 행 잠금과 버전 검사 후에 계산하고 원래 요청의 재생 hash는 유지한다. 보충으로 실제 값이 바뀌면 같은 트랜잭션에서 버전과 processing_changed 활동을 기록하며, 이미 입력함에 있으면 동일 값 변경은 no-op이다. 과거 자료의 일괄 보정은 수행하지 않는다.

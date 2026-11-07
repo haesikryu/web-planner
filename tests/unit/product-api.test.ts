@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -93,7 +93,7 @@ describe("task API ownership, atomic changes and pagination", () => {
     const first = await create({ title: "  e\u0301 할 일  " }, { key });
     expect(first.status).toBe(201); expect(first.headers.get("etag")).toBe('"v1"');
     const body = await first.json();
-    expect(body).toMatchObject({ title: "é 할 일", status: "open", isUnprocessed: true, scheduledDate: null, dueDate: null, completedAt: null, version: 1 });
+    expect(body).toMatchObject({ title: "é 할 일", status: "open", priority: "medium", kind: "task", isUnprocessed: true, scheduledDate: null, dueDate: null, completedAt: null, version: 1 });
     expect(body.ownerId).toBeUndefined();
     const replay = await create({ title: "é 할 일", scheduledDate: null }, { key });
     expect(await replay.json()).toEqual(body);
@@ -112,6 +112,101 @@ describe("task API ownership, atomic changes and pagination", () => {
     expect((await patch(task.id, { title: "safe" }, { key, version: 1, csrf: "bad" })).status).toBe(403);
     expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(1);
     expect((await patch(task.id, { title: "safe" }, { key, version: 1 })).status).toBe(200);
+  });
+  it("stores priority and kind with validation, version checks and audit activities", async () => {
+    for (const body of [{ title: "bad", priority: "urgent" }, { title: "bad", priority: null }, { title: "bad", kind: "note" }, { title: "bad", kind: null }]) {
+      expect((await create(body)).status).toBe(422);
+    }
+    const task = await (await create({ title: "appointment", priority: "high", kind: "appointment" })).json();
+    expect(task).toMatchObject({ priority: "high", kind: "appointment", version: 1 });
+    for (const body of [{ priority: "urgent" }, { kind: "note" }, { status: "deleted" }, { status: null }]) {
+      expect((await patch(task.id, body, { version: 1 })).status).toBe(422);
+    }
+    expect((await patch(task.id, { priority: "low", kind: "event" }, { actor: bob, version: 1 })).status).toBe(404);
+    const key = randomUUID();
+    const changed = await patch(task.id, { priority: "low", kind: "event" }, { key, version: 1 });
+    expect(await changed.json()).toMatchObject({ priority: "low", kind: "event", version: 2 });
+    expect((await patch(task.id, { priority: "low", kind: "event" }, { key, version: 1 })).status).toBe(200);
+    expect((await patch(task.id, { priority: "low", kind: "event" }, { version: 2 })).headers.get("etag")).toBe('"v2"');
+    expect((await patch(task.id, { priority: "high" }, { version: 1 })).status).toBe(412);
+    expect((await db.select().from(schema.taskActivities)).map(item => item.type).sort()).toEqual(["kind_changed", "priority_changed"]);
+  });
+  it("keeps legacy replay payload hashes and supplies additive task defaults", async () => {
+    const key = randomUUID();
+    const task = await (await create({ title: "before additive fields" }, { key })).json();
+    const record = (await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key)))[0];
+    const { priority: _priority, kind: _kind, ...oldBody } = task;
+    await db.update(schema.idempotencyRecords).set({ response: { status: 201, body: oldBody, etag: '"v1"' } }).where(eq(schema.idempotencyRecords.key, key));
+    const replay = await create({ title: "before additive fields" }, { key });
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual(task);
+    const stored = (await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key)))[0];
+    expect(stored.requestHash).toBe(record.requestHash);
+    expect(stored.response).toEqual({ status: 201, body: oldBody, etag: '"v1"' });
+    expect(await db.select().from(schema.tasks)).toHaveLength(1);
+  });
+  it("preserves canceled markers, restores tasks and invalidates completion across all states", async () => {
+    const date = "2026-01-01";
+    const task = await (await create({ title: "state transitions", scheduledDate: date })).json();
+    const transition = async (status: string, version: number) => {
+      const result = await patch(task.id, { status, isUnprocessed: false }, { version });
+      expect(result.status).toBe(200);
+      return result.json();
+    };
+    expect(await transition("completed", 1)).toMatchObject({ status: "completed", version: 2, completedAt: expect.any(String) });
+    expect(await transition("canceled", 2)).toMatchObject({ status: "canceled", version: 3, completedAt: null, scheduledDate: date });
+    const canceledPage = await listTasks(request(`/api/tasks?view=scheduled&date=${date}`, "GET"));
+    expect((await canceledPage.json()).items).toMatchObject([{ id: task.id, status: "canceled" }]);
+    const overdueCanceled = await listTasks(request("/api/tasks?view=overdue&date=2026-01-02", "GET"));
+    expect((await overdueCanceled.json()).items).toHaveLength(0);
+    expect(await transition("open", 3)).toMatchObject({ status: "open", version: 4, completedAt: null });
+    expect(await transition("deferred", 4)).toMatchObject({ status: "deferred", version: 5, completedAt: null, scheduledDate: date });
+    const deferredPage = await listTasks(request("/api/tasks?view=overdue&date=2026-01-02", "GET"));
+    expect((await deferredPage.json()).items).toMatchObject([{ id: task.id, status: "deferred" }]);
+    expect(await transition("completed", 5)).toMatchObject({ status: "completed", version: 6, completedAt: expect.any(String) });
+    const activities = await db.select().from(schema.taskActivities);
+    expect(activities.filter(item => item.type === "completed" && item.invalidatedBy === null)).toHaveLength(1);
+    expect(activities.filter(item => item.type === "completed" && item.invalidatedBy !== null)).toHaveLength(1);
+    expect(activities.map(item => item.type)).toEqual(expect.arrayContaining(["completion_undone", "canceled", "reopened", "deferred"]));
+    expect((await patch(task.id, { status: "canceled" }, { actor: bob, version: 6 })).status).toBe(404);
+  });
+  it.each(["open", "deferred", "canceled"])("returns an undated processed completion to the inbox when set to %s", async status => {
+    const task = await (await create({ title: "undated completion" })).json();
+    expect((await patch(task.id, { status: "completed", isUnprocessed: false }, { version: 1 })).status).toBe(200);
+    const key = randomUUID();
+    expect((await patch(task.id, { status, isUnprocessed: false }, { key, version: 2 })).status).toBe(422);
+    const restored = await patch(task.id, { status }, { key, version: 2 });
+    expect(restored.status).toBe(200);
+    const body = await restored.json();
+    expect(body).toMatchObject({ status, scheduledDate: null, completedAt: null, isUnprocessed: true, version: 3 });
+    const replay = await patch(task.id, { status }, { key, version: 2 });
+    expect(await replay.json()).toEqual(body);
+    expect((await patch(task.id, { status }, { version: 3 })).headers.get("etag")).toBe('"v3"');
+    const stored = (await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key)))[0];
+    expect(stored.requestHash).toBe(createHash("sha256").update(JSON.stringify({ input: { status }, version: 2 })).digest("hex"));
+    expect((await (await listTasks(request("/api/tasks?view=inbox", "GET"))).json()).items).toMatchObject([{ id: task.id, status, isUnprocessed: true }]);
+    const activities = await db.select().from(schema.taskActivities);
+    expect(activities.filter(item => item.type === "processing_changed")).toHaveLength(2);
+    expect(activities.filter(item => item.type === "completed" && item.invalidatedBy === null)).toHaveLength(0);
+    expect(activities.filter(item => item.type === "completion_undone")).toHaveLength(1);
+  });
+  it("rejects hiding undated non-completed items and returns a date-cleared item to the inbox", async () => {
+    const undated = await (await create({ title: "keep reachable" })).json();
+    expect((await patch(undated.id, { isUnprocessed: false }, { version: 1 })).status).toBe(422);
+    expect((await db.select().from(schema.tasks).where(eq(schema.tasks.id, undated.id)))[0]).toMatchObject({ isUnprocessed: true, version: 1 });
+    const dated = await (await create({ title: "date can be removed", scheduledDate: "2026-11-07" })).json();
+    expect((await patch(dated.id, { status: "deferred", isUnprocessed: false }, { version: 1 })).status).toBe(200);
+    expect((await patch(dated.id, { scheduledDate: null, isUnprocessed: false }, { version: 2 })).status).toBe(422);
+    expect(await (await patch(dated.id, { scheduledDate: null }, { version: 2 })).json()).toMatchObject({ scheduledDate: null, status: "deferred", isUnprocessed: true, version: 3 });
+    const activities = await db.select().from(schema.taskActivities).where(eq(schema.taskActivities.taskId, dated.id));
+    expect(activities.filter(item => item.type === "processing_changed")).toHaveLength(2);
+    expect(activities.filter(item => item.type === "scheduled_date_changed")).toHaveLength(1);
+  });
+  it("increments a version when inbox protection is the only derived change", async () => {
+    const [legacy] = await db.insert(schema.tasks).values({ ownerId: alice, title: "legacy undated", isUnprocessed: false }).returning();
+    expect(await (await patch(legacy.id, { priority: "medium" }, { version: 1 })).json()).toMatchObject({ isUnprocessed: true, version: 2 });
+    expect((await patch(legacy.id, { priority: "medium" }, { version: 2 })).headers.get("etag")).toBe('"v2"');
+    expect((await db.select().from(schema.taskActivities)).map(item => item.type)).toEqual(["processing_changed"]);
   });
   it("completes, undoes and completes again atomically with one active completion", async () => {
     const date = today("Asia/Seoul");
