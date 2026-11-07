@@ -23,7 +23,7 @@
 
 동일 SQL 마이그레이션 재실행, 잘못된 과제·다른 소유자의 활동 연결 거부, 요청 키 소유자별 유일성, 실패한 트랜잭션 롤백, DB 스냅샷의 별도 인스턴스 복원을 확인했다. PostgreSQL 서버의 pg_dump·pg_restore와 운영 백업 복원은 후속 검증이다.
 
-`npm run build`와 PC·360px 모바일 Playwright 8개 회귀 검사가 통과했다. 로컬 테스트 서버의 sandbox 포트 제한은 허용된 실행으로 해소했다. GitHub CI 링크는 원격 실행 후 추가한다. 의존성 클린 설치와 esbuild override를 확인했으며 npm 감사의 알려진 취약점은 0건이다. override는 Drizzle Kit 전이 의존성의 esbuild만 0.28.2로 고정하며 마이그레이션 재생성과 타입 검사로 호환성을 확인한다.
+`npm run build`와 PC·360px 모바일 Playwright 8개 회귀 검사가 통과했다. 로컬 테스트 서버의 sandbox 포트 제한은 허용된 실행으로 해소했다. [PR #3 GitHub CI](https://github.com/haesikryu/web-planner/actions/runs/42325214534)는 코드 커밋 `c19c1e63d3716b305168590cf8870a9a2988b8f8`에서 설치·명세·린트·타입·26개 테스트·빌드·브라우저 설치·8개 E2E 전 단계를 통과했다. PR은 Draft이며 선행 PR #2와 함께 미병합 상태다. 의존성 클린 설치와 esbuild override를 확인했으며 npm 감사의 알려진 취약점은 0건이다. override는 Drizzle Kit 전이 의존성의 esbuild만 0.28.2로 고정하며 마이그레이션 재생성과 타입 검사로 호환성을 확인한다.
 
 ## 남은 통과 조건
 
