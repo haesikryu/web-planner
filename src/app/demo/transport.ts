@@ -2,11 +2,11 @@ import { type JournalEntry, journalContent } from "../../domain/journal";
 import { calendarDate, dayRange, InputError, object, title, timezone, today, uuidPattern } from "../../domain/rules";
 import { normalizeScheduleSlots, type ScheduleEntry, type ScheduleSlot } from "../../domain/schedule";
 import { type TaskKind, type TaskPriority, type TaskStatus, taskKind, taskPriority, taskStatus } from "../../domain/task-options";
+import { DAILY_TASK_LIMIT, type TaskMove, taskMove } from "../../domain/task-order";
 import type { PlannerSession } from "../planner";
 
 const STORAGE_KEY = "web-planner:demo:v1";
 const REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
-const DAILY_TASK_LIMIT = 5;
 type DemoTask = {
   id: string;
   title: string;
@@ -14,6 +14,7 @@ type DemoTask = {
   priority: TaskPriority;
   kind: TaskKind;
   scheduledDate: string | null;
+  dailyOrder: number | null;
   isUnprocessed: boolean;
   version: number;
   createdAt: string;
@@ -22,9 +23,9 @@ type DemoTask = {
 };
 type JournalRequest = { key: string; date: string; content: string; version: number; expiresAt: string; response: JournalEntry };
 type ScheduleRequest = { key: string; date: string; slots: ScheduleSlot[]; version: number; expiresAt: string; response: ScheduleEntry };
-type TaskInput = Partial<Pick<DemoTask, "title" | "scheduledDate" | "status" | "priority" | "kind" | "isUnprocessed">>;
+type TaskInput = Partial<Pick<DemoTask, "title" | "scheduledDate" | "status" | "priority" | "kind" | "isUnprocessed">> & { move?: TaskMove };
 type TaskRequest = { key: string; method: "POST" | "PATCH"; path: string; input: TaskInput; version: number | null; expiresAt: string; response: DemoTask };
-type DemoState = { schemaVersion: 4; timezone: string; settingsVersion: number; tasks: DemoTask[]; journals: JournalEntry[]; journalRequests: JournalRequest[];
+type DemoState = { schemaVersion: 5; timezone: string; settingsVersion: number; tasks: DemoTask[]; journals: JournalEntry[]; journalRequests: JournalRequest[];
   schedules: ScheduleEntry[]; scheduleRequests: ScheduleRequest[]; taskRequests: TaskRequest[] };
 type DemoStorage = Pick<Storage, "getItem" | "setItem">;
 
@@ -64,13 +65,29 @@ function validTask(task: DemoTask): boolean {
     (task.status === "completed" ? timestamp(task.completedAt) : task.completedAt === null);
 }
 
+function validDailyOrder(task: DemoTask, historical = false): boolean {
+  return task.scheduledDate === null ? task.dailyOrder === null : (positiveInteger(task.dailyOrder) && task.dailyOrder <= 2147483647) || (historical && task.dailyOrder === null);
+}
+
+function creationOrder(left: DemoTask, right: DemoTask): number {
+  return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+}
+
+function dayOrder(left: DemoTask, right: DemoTask): number {
+  return (left.dailyOrder ?? 0) - (right.dailyOrder ?? 0) || creationOrder(left, right);
+}
+
 function taskFields(create: boolean) {
-  return create ? ["title", "scheduledDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind"];
+  return create ? ["title", "scheduledDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind", "move"];
 }
 
 function normalizedTaskInput(raw: unknown, create: boolean): TaskInput {
   const input = object(raw, taskFields(create));
   if ((!create && !Object.keys(input).length) || (create && !("title" in input))) throw new InputError("body");
+  if ("move" in input) {
+    if (Object.keys(input).length !== 1) throw new InputError("move");
+    return { move: taskMove(input.move) };
+  }
   const result: TaskInput = {};
   if ("title" in input) result.title = title(input.title);
   if ("scheduledDate" in input) result.scheduledDate = input.scheduledDate === null ? null : calendarDate(input.scheduledDate);
@@ -92,10 +109,10 @@ function sameTaskInput(left: TaskInput, right: TaskInput): boolean {
 
 function readState(storage: DemoStorage): DemoState {
   const stored = storage.getItem(STORAGE_KEY);
-  if (stored === null) return { schemaVersion: 4, timezone: "Asia/Seoul", settingsVersion: 1, tasks: [], journals: [], journalRequests: [], schedules: [], scheduleRequests: [], taskRequests: [] };
+  if (stored === null) return { schemaVersion: 5, timezone: "Asia/Seoul", settingsVersion: 1, tasks: [], journals: [], journalRequests: [], schedules: [], scheduleRequests: [], taskRequests: [] };
   try {
-    const state = JSON.parse(stored) as Omit<DemoState, "schemaVersion"> & { schemaVersion: 1 | 2 | 3 | 4 };
-    if (![1, 2, 3, 4].includes(state.schemaVersion) || !positiveInteger(state.settingsVersion) || timezone(state.timezone) !== state.timezone || !Array.isArray(state.tasks)) throw new Error();
+    const state = JSON.parse(stored) as Omit<DemoState, "schemaVersion"> & { schemaVersion: 1 | 2 | 3 | 4 | 5 };
+    if (![1, 2, 3, 4, 5].includes(state.schemaVersion) || !positiveInteger(state.settingsVersion) || timezone(state.timezone) !== state.timezone || !Array.isArray(state.tasks)) throw new Error();
     const ids = new Set<string>();
     for (const task of state.tasks) {
       // Adapt old entries in memory; persist only with the next successful mutation.
@@ -104,6 +121,22 @@ function readState(storage: DemoStorage): DemoState {
       task.status = taskStatus(task.status);
       if (!validTask(task) || ids.has(task.id)) throw new Error();
       ids.add(task.id);
+    }
+    if (state.schemaVersion < 5) {
+      const nextOrder = new Map<string, number>();
+      for (const task of [...state.tasks].sort(creationOrder)) {
+        if (task.scheduledDate === null) task.dailyOrder = null;
+        else {
+          task.dailyOrder = (nextOrder.get(task.scheduledDate) ?? 0) + 1;
+          nextOrder.set(task.scheduledDate, task.dailyOrder);
+        }
+      }
+    }
+    const dailyPositions = new Set<string>();
+    for (const task of state.tasks) {
+      const position = `${task.scheduledDate}:${task.dailyOrder}`;
+      if (!validDailyOrder(task) || (task.scheduledDate !== null && dailyPositions.has(position))) throw new Error();
+      if (task.scheduledDate !== null) dailyPositions.add(position);
     }
     if (state.schemaVersion < 3) {
       state.journals = [];
@@ -145,19 +178,21 @@ function readState(storage: DemoStorage): DemoState {
       requestKeys.add(scope);
     }
     // Older demo snapshots did not retain task responses; never require a reset.
-    if (!Object.hasOwn(state, "taskRequests")) state.taskRequests = [];
+    if (state.schemaVersion < 5 && !Object.hasOwn(state, "taskRequests")) state.taskRequests = [];
     if (!Array.isArray(state.taskRequests)) throw new Error();
     requestKeys.clear();
     for (const saved of state.taskRequests) {
+      // Old response snapshots predate row order; do not invent a historical position.
+      if (state.schemaVersion < 5 && !Object.hasOwn(saved.response, "dailyOrder")) saved.response.dailyOrder = null;
       const scope = `${saved.method}:${saved.path}:${saved.key}`;
       const create = saved.method === "POST";
       if (!["POST", "PATCH"].includes(saved.method) || !uuidPattern.test(saved.key) || saved.key !== saved.key.toLowerCase() || requestKeys.has(scope) ||
           (create ? saved.path !== "/api/tasks" || saved.version !== null || saved.response.version !== 1 :
             saved.path !== `/api/tasks/${saved.response.id}` || !positiveInteger(saved.version) || saved.response.version < saved.version || saved.response.version > saved.version + 1) ||
-          !sameTaskInput(normalizedTaskInput(saved.input, create), saved.input) || !timestamp(saved.expiresAt) || !validTask(saved.response)) throw new Error();
+          !sameTaskInput(normalizedTaskInput(saved.input, create), saved.input) || !timestamp(saved.expiresAt) || !validTask(saved.response) || !validDailyOrder(saved.response, true)) throw new Error();
       requestKeys.add(scope);
     }
-    return { ...state, schemaVersion: 4 };
+    return { ...state, schemaVersion: 5 };
   } catch {
     throw new Error("브라우저의 테스트 저장 데이터가 손상되어 불러올 수 없습니다.");
   }
@@ -227,6 +262,13 @@ function checkDailyCapacity(state: DemoState, date: string | null) {
   }
 }
 
+function appendedOrder(state: DemoState, date: string | null): number | null {
+  if (date === null) return null;
+  const next = state.tasks.reduce((maximum, task) => task.scheduledDate === date ? Math.max(maximum, task.dailyOrder ?? 0) : maximum, 0) + 1;
+  if (!positiveInteger(next) || next > 2147483647) throw new InputError("dailyOrder");
+  return next;
+}
+
 function listTasks(state: DemoState, params: URLSearchParams, now: Date) {
   const view = params.get("view") ?? "inbox";
   if (!["inbox", "day", "scheduled", "overdue", "completed"].includes(view)) throw new InputError("view");
@@ -241,6 +283,7 @@ function listTasks(state: DemoState, params: URLSearchParams, now: Date) {
       Date.parse(task.completedAt) >= range.start.getTime() && Date.parse(task.completedAt) < range.end.getTime();
   });
   items.sort((left, right) => {
+    if (view === "day") return dayOrder(left, right);
     const order = view === "completed"
       ? (right.completedAt ?? "").localeCompare(left.completedAt ?? "")
       : left.createdAt.localeCompare(right.createdAt);
@@ -311,6 +354,7 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
         const task: DemoTask = {
           id: crypto.randomUUID(), title: input.title ?? "", status: "open", isUnprocessed: input.isUnprocessed !== false, version: 1,
           priority: input.priority ?? "medium", kind: input.kind ?? "task", scheduledDate: input.scheduledDate ?? null,
+          dailyOrder: appendedOrder(state, input.scheduledDate ?? null),
           createdAt: instant.toISOString(), updatedAt: instant.toISOString(), completedAt: null
         };
         if (!task.isUnprocessed && task.scheduledDate === null) throw new InputError("isUnprocessed");
@@ -338,13 +382,31 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
       const { saved, ...write } = taskWrite(state, "PATCH", url.pathname, init, instant);
       if (saved) return json(saved.response, 200, saved.response.version);
       if (write.version !== task.version) throw new DemoRequestError(412, "VERSION_CONFLICT", "항목이 변경되었습니다. 최신 내용을 확인해주세요.");
+      if (write.input.move) {
+        if (task.scheduledDate === null) throw new InputError("move");
+        const day = state.tasks.filter(item => item.scheduledDate === task.scheduledDate).sort(dayOrder);
+        const neighbor = day[day.indexOf(task) + (write.input.move === "up" ? -1 : 1)];
+        let next = task;
+        if (neighbor) {
+          next = { ...task, dailyOrder: neighbor.dailyOrder, version: task.version + 1, updatedAt: instant.toISOString() };
+          const adjacent = { ...neighbor, dailyOrder: task.dailyOrder, version: neighbor.version + 1, updatedAt: instant.toISOString() };
+          state.tasks[state.tasks.indexOf(task)] = next;
+          state.tasks[state.tasks.indexOf(neighbor)] = adjacent;
+        }
+        rememberTask(state, { ...write, response: next }, instant);
+        storage.setItem(STORAGE_KEY, JSON.stringify(state));
+        return json(next, 200, next.version);
+      }
       const { input } = write, next = { ...task, ...input };
       if (next.status !== task.status) next.completedAt = next.status === "completed" ? instant.toISOString() : null;
       if (next.status !== "completed" && next.scheduledDate === null) {
         if (input.isUnprocessed === false) throw new InputError("isUnprocessed");
         next.isUnprocessed = true;
       }
-      if (next.scheduledDate !== task.scheduledDate) checkDailyCapacity(state, next.scheduledDate);
+      if (next.scheduledDate !== task.scheduledDate) {
+        checkDailyCapacity(state, next.scheduledDate);
+        next.dailyOrder = appendedOrder(state, next.scheduledDate);
+      }
       const changed = next.isUnprocessed !== task.isUnprocessed || Object.keys(input).some(field => next[field as keyof DemoTask] !== task[field as keyof DemoTask]);
       if (changed) {
         next.version++;

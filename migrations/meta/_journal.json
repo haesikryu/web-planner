@@ -36,6 +36,13 @@
       "when": 1794058669113,
       "tag": "0004_daily_schedule",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794059765488,
+      "tag": "0005_task_daily_order",
+      "breakpoints": true
     }
   ]
 }

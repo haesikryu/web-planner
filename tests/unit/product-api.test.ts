@@ -55,7 +55,7 @@ afterAll(async () => { if (pool) await pool.end(); else await pg?.close(); });
 
 describe("account settings contract and replay", () => {
   it("changes account zone atomically and replays before the old version check", async () => {
-    const [original] = await db.insert(schema.tasks).values({ ownerId: alice, title: "calendar preservation", status: "completed", scheduledDate: "2026-11-07", dueDate: "2026-11-08", completedAt: new Date("2026-11-06T15:30:00Z") }).returning();
+    const [original] = await db.insert(schema.tasks).values({ ownerId: alice, title: "calendar preservation", status: "completed", scheduledDate: "2026-11-07", dailyOrder: 1, dueDate: "2026-11-08", completedAt: new Date("2026-11-06T15:30:00Z") }).returning();
     const [activity] = await db.insert(schema.taskActivities).values({ ownerId: alice, taskId: original.id, type: "completed", occurredAt: original.completedAt ?? new Date() }).returning();
     const key = randomUUID();
     const first = await settings(request("/api/settings", "PATCH", { timezone: "Asia/Seoul" }, { version: 1, key }));
@@ -368,7 +368,7 @@ describe("task API ownership, atomic changes and pagination", () => {
   });
   it("preserves legacy over-limit days while allowing same-day edits and moves out", async () => {
     const date = "2026-11-07";
-    const legacy = await db.insert(schema.tasks).values(Array.from({ length: 6 }, (_, i) => ({ ownerId: alice, title: `legacy ${i}`, scheduledDate: date, isUnprocessed: false }))).returning();
+    const legacy = await db.insert(schema.tasks).values(Array.from({ length: 6 }, (_, i) => ({ ownerId: alice, title: `legacy ${i}`, scheduledDate: date, dailyOrder: i + 1, isUnprocessed: false }))).returning();
     expect((await patch(legacy[0].id, { title: "edited", scheduledDate: date }, { version: 1 })).status).toBe(200);
     expect((await patch(legacy[1].id, { status: "completed" }, { version: 1 })).status).toBe(200);
     const incoming = await (await create({ title: "inbox" })).json();
@@ -400,6 +400,116 @@ describe("task API ownership, atomic changes and pagination", () => {
       expect(denied).toBeDefined(); expect(await denied?.json()).toMatchObject({ code: "DAILY_TASK_LIMIT" });
       expect((await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json()).items).toHaveLength(5);
     }
+  });
+  it("appends day order and atomically swaps adjacent tasks without changing their content or status", async () => {
+    const date = "2026-11-07";
+    const a = await (await create({ title: "A", scheduledDate: date })).json();
+    const b = await (await create({ title: "B", scheduledDate: date })).json();
+    const c = await (await create({ title: "C", scheduledDate: date })).json();
+    expect([a.dailyOrder, b.dailyOrder, c.dailyOrder]).toEqual([1, 2, 3]);
+    const key = randomUUID(), moved = await (await patch(b.id, { move: "up" }, { key, version: 1 })).json();
+    expect(moved).toMatchObject({ id: b.id, title: "B", dailyOrder: 1, version: 2, status: "open" });
+    const neighbor = await (await getTask(request(`/api/tasks/${a.id}`, "GET"), context(a.id))).json();
+    expect(neighbor).toMatchObject({ id: a.id, dailyOrder: 2, version: 2, title: "A", status: "open" });
+    expect(neighbor.updatedAt).toBe(moved.updatedAt);
+    expect(await (await patch(b.id, { move: "up" }, { key, version: 1 })).json()).toEqual(moved);
+    expect(await (await patch(b.id, { move: "up" }, { version: 2 })).json()).toEqual(moved);
+    expect((await patch(a.id, { title: "stale" }, { version: 1 })).status).toBe(412);
+    const changed = await (await patch(a.id, { title: "updated", priority: "low", status: "canceled" }, { version: 2 })).json();
+    expect(changed).toMatchObject({ dailyOrder: 2, version: 3, status: "canceled" });
+    expect(await (await patch(c.id, { move: "down" }, { version: 1 })).json()).toMatchObject({ dailyOrder: 3, version: 1 });
+    const day = await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json();
+    expect(day.items.map((task: { id: string }) => task.id)).toEqual([b.id, a.id, c.id]);
+    expect((await db.select().from(schema.taskActivities)).filter(item => item.type === "order_changed")).toHaveLength(2);
+  });
+  it("keeps gaps and appends moved tasks after the destination's maximum order", async () => {
+    const date = "2026-11-07", other = "2026-11-08";
+    const a = await (await create({ title: "A", scheduledDate: date })).json();
+    const b = await (await create({ title: "B", scheduledDate: date })).json();
+    const c = await (await create({ title: "C", scheduledDate: date })).json();
+    await create({ title: "destination", scheduledDate: other });
+    expect(await (await patch(b.id, { scheduledDate: other }, { version: 1 })).json()).toMatchObject({ dailyOrder: 2, version: 2 });
+    const d = await (await create({ title: "D", scheduledDate: date })).json();
+    expect(d.dailyOrder).toBe(4);
+    expect(await (await patch(c.id, { scheduledDate: null }, { version: 1 })).json()).toMatchObject({ dailyOrder: null, scheduledDate: null, version: 2 });
+    expect(await (await patch(c.id, { scheduledDate: other }, { version: 2 })).json()).toMatchObject({ dailyOrder: 3, version: 3 });
+    expect((await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json()).items.map((item: { id: string; dailyOrder: number }) => [item.id, item.dailyOrder])).toEqual([[a.id, 1], [d.id, 4]]);
+  });
+  it("validates standalone relative moves and owner isolation without consuming rejected keys", async () => {
+    const undated = await (await create({ title: "undated" })).json(), key = randomUUID();
+    for (const body of [{ move: "left" }, { move: null }, { move: "up", title: "changed" }, { move: "down", scheduledDate: "2026-11-07" }, { dailyOrder: 1 }]) {
+      expect((await patch(undated.id, body, { key, version: 1 })).status).toBe(422);
+    }
+    expect((await patch(undated.id, { move: "up" }, { key, version: 1 })).status).toBe(422);
+    expect((await patch(undated.id, { move: "up" }, { key, version: 1, actor: bob })).status).toBe(404);
+    expect((await create({ title: "forged", scheduledDate: "2026-11-07", dailyOrder: 10 })).status).toBe(422);
+    expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
+    expect(await db.select().from(schema.taskActivities)).toHaveLength(0);
+  });
+  it("paginates day order after swaps with stable tie breakers and owner-bound cursors", async () => {
+    const date = "2026-11-07", items = [];
+    for (let i = 0; i < 5; i++) items.push(await (await create({ title: `ordered ${i}`, scheduledDate: date })).json());
+    await patch(items[4].id, { move: "up" }, { version: 1 });
+    const ids: string[] = []; let cursor: string | null = null;
+    do {
+      const page = await (await listTasks(request(`/api/tasks?view=day&date=${date}&limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, "GET"))).json();
+      ids.push(...page.items.map((item: { id: string }) => item.id)); cursor = page.nextCursor;
+      if (cursor) expect((await listTasks(request(`/api/tasks?view=day&date=${date}&limit=2&cursor=${encodeURIComponent(cursor)}`, "GET", undefined, { actor: bob }))).status).toBe(400);
+    } while (cursor);
+    expect(ids).toEqual([items[0].id, items[1].id, items[2].id, items[4].id, items[3].id]);
+  });
+  it("preserves old dated replay snapshots when the current task has moved or reordered", async () => {
+    const key = randomUUID();
+    const task = await (await create({ title: "historical", scheduledDate: "2026-11-07" }, { key })).json();
+    const { dailyOrder: _order, ...oldBody } = task;
+    await db.update(schema.idempotencyRecords).set({ response: { status: 201, body: oldBody, etag: '"v1"' } }).where(eq(schema.idempotencyRecords.key, key));
+    const record = (await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key)))[0];
+    await patch(task.id, { scheduledDate: "2026-11-08" }, { version: 1 });
+    const replay = await (await create({ title: "historical", scheduledDate: "2026-11-07" }, { key })).json();
+    expect(replay).toEqual({ ...oldBody, dailyOrder: null });
+    expect((await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key)))[0]).toEqual(record);
+    expect((await db.select().from(schema.tasks))[0]).toMatchObject({ scheduledDate: "2026-11-08", dailyOrder: 1, version: 2 });
+  });
+  it("serializes overlapping reorders so both rows receive exactly one successful swap", async () => {
+    const date = "2026-11-07";
+    const a = await (await create({ title: "A", scheduledDate: date })).json(), b = await (await create({ title: "B", scheduledDate: date })).json();
+    const responses = await Promise.all([patch(a.id, { move: "down" }, { version: 1 }), patch(b.id, { move: "up" }, { version: 1 })]);
+    expect(responses.map(item => item.status).sort()).toEqual([200, 412]);
+    const rows = await db.select().from(schema.tasks);
+    expect(rows.map(row => row.version)).toEqual([2, 2]);
+    expect(rows.map(row => row.dailyOrder).sort()).toEqual([1, 2]);
+    expect((await db.select().from(schema.taskActivities)).filter(item => item.type === "order_changed")).toHaveLength(2);
+  });
+  it("keeps date changes, appends and reorders deadlock-free under concurrent writes", async () => {
+    const first = "2026-11-07", second = "2026-11-08";
+    const a = await (await create({ title: "A", scheduledDate: first })).json(), b = await (await create({ title: "B", scheduledDate: first })).json();
+    const c = await (await create({ title: "C", scheduledDate: second })).json(), d = await (await create({ title: "D", scheduledDate: second })).json();
+    const responses = await Promise.all([
+      patch(a.id, { scheduledDate: second }, { version: 1 }), patch(c.id, { scheduledDate: first }, { version: 1 }),
+      patch(b.id, { move: "up" }, { version: 1 }), patch(d.id, { move: "up" }, { version: 1 }),
+      create({ title: "appended", scheduledDate: first })
+    ]);
+    for (const response of responses) expect([200, 201, 412]).toContain(response.status);
+    for (const date of [first, second]) {
+      const rows = (await db.select().from(schema.tasks)).filter(row => row.scheduledDate === date);
+      expect(rows.length).toBeLessThanOrEqual(5);
+      expect(new Set(rows.map(row => row.dailyOrder)).size).toBe(rows.length);
+      expect(rows.every(row => (row.dailyOrder ?? 0) > 0)).toBe(true);
+    }
+  });
+  it("rolls back both swapped rows and the replay key when an order activity fails", async () => {
+    const date = "2026-11-07", key = randomUUID();
+    const a = await (await create({ title: "A", scheduledDate: date })).json(), b = await (await create({ title: "B", scheduledDate: date })).json();
+    const before = await db.select().from(schema.tasks).orderBy(schema.tasks.id);
+    await db.execute(sql`CREATE FUNCTION reject_order_activity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-order-fault'; END $$`);
+    await db.execute(sql`CREATE TRIGGER order_activity_failure BEFORE INSERT ON task_activities FOR EACH ROW EXECUTE FUNCTION reject_order_activity()`);
+    try {
+      expect((await patch(b.id, { move: "up" }, { key, version: 1 })).status).toBe(500);
+      expect(await db.select().from(schema.tasks).orderBy(schema.tasks.id)).toEqual(before);
+      expect(await db.select().from(schema.taskActivities)).toHaveLength(0);
+      expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
+    } finally { await db.execute(sql`DROP TRIGGER order_activity_failure ON task_activities`); await db.execute(sql`DROP FUNCTION reject_order_activity()`); }
+    expect(await (await patch(b.id, { move: "up" }, { key, version: 1 })).json()).toMatchObject({ dailyOrder: a.dailyOrder, version: 2 });
   });
   it("keeps anonymous and other-owner reads/updates private without consuming keys", async () => {
     const task = await (await create({ title: "private" })).json();

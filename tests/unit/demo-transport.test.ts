@@ -54,7 +54,7 @@ describe("browser-only demo transport", () => {
     expect(storage.getItem(key)).toBe(legacy);
     setter.mockRestore();
     expect((await demo.request(`/api/tasks/${legacyTask.id}`, mutation("PATCH", { priority: "high", kind: "event" }, 4))).status).toBe(200);
-    expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(4);
+    expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(5);
     const restored = createDemoTransport(storage);
     expect(await (await restored.request(`/api/tasks/${legacyTask.id}`)).json()).toMatchObject({ ...legacyTask, priority: "high", kind: "event", version: 5, updatedAt: expect.any(String) });
   });
@@ -315,7 +315,7 @@ describe("browser-only demo transport", () => {
       expect(storage.getItem(key)).toBe(legacy);
       expect((await demo.request("/api/journal/2026-11-07", journalMutation("새로운 다이어리"))).status).toBe(200);
       const restored = createDemoTransport(storage);
-      expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(4);
+      expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(5);
       expect(restored.initialSession.settingsVersion).toBe(2);
       expect(await (await restored.request(`/api/tasks/${task.id}`)).json()).toEqual(task);
       expect(await (await restored.request("/api/journal/2026-11-07")).json()).toMatchObject({ content: "새로운 다이어리", version: 1 });
@@ -504,7 +504,7 @@ describe("browser-only demo transport", () => {
   it("saves task changes and replay records atomically while accepting old snapshots without task replay data", async () => {
     const storage = memoryStorage(), demo = createDemoTransport(storage);
     const seed = await (await demo.request("/api/tasks", mutation("POST", { title: "보존할 일" }))).json();
-    const legacy = JSON.parse(storage.getItem(key) ?? "{}"); delete legacy.taskRequests;
+    const legacy = JSON.parse(storage.getItem(key) ?? "{}"); legacy.schemaVersion = 4; delete legacy.taskRequests;
     const raw = JSON.stringify(legacy); storage.setItem(key, raw);
     expect(await (await createDemoTransport(storage).request(`/api/tasks/${seed.id}`)).json()).toEqual(seed);
     expect(storage.getItem(key)).toBe(raw);
@@ -529,6 +529,158 @@ describe("browser-only demo transport", () => {
       expect(() => createDemoTransport(storage)).toThrow("손상");
       expect((await demo.request("/api/tasks", request)).status).toBe(500);
       expect(storage.getItem(key)).toBe(corrupted);
+    }
+  });
+
+  it("appends dated tasks and date transfers while preserving row order through other edits", async () => {
+    const storage = memoryStorage(), demo = createDemoTransport(storage);
+    const create = async (title: string, scheduledDate?: string) => (await demo.request("/api/tasks", mutation("POST", { title, scheduledDate }))).json();
+    const first = await create("첫째", "2026-11-07"), second = await create("둘째", "2026-11-07"), third = await create("셋째", "2026-11-07");
+    expect([first.dailyOrder, second.dailyOrder, third.dailyOrder]).toEqual([1, 2, 3]);
+    const inbox = await create("입력함"); expect(inbox.dailyOrder).toBeNull();
+    const detached = await (await demo.request(`/api/tasks/${second.id}`, mutation("PATCH", { scheduledDate: null }, 1))).json();
+    expect(detached).toMatchObject({ scheduledDate: null, dailyOrder: null, version: 2 });
+    const fourth = await create("넷째", "2026-11-07"); expect(fourth.dailyOrder).toBe(4);
+    const otherDay = await create("다른 날 첫째", "2026-11-08"); expect(otherDay.dailyOrder).toBe(1);
+    const transferred = await (await demo.request(`/api/tasks/${second.id}`, mutation("PATCH", { scheduledDate: "2026-11-08", isUnprocessed: false }, 2))).json();
+    expect(transferred).toMatchObject({ scheduledDate: "2026-11-08", dailyOrder: 2, version: 3 });
+    const edited = await (await demo.request(`/api/tasks/${third.id}`, mutation("PATCH", { title: "셋째 수정", status: "completed", priority: "high", kind: "event", scheduledDate: "2026-11-07" }, 1))).json();
+    expect(edited).toMatchObject({ dailyOrder: 3, status: "completed", priority: "high", kind: "event", version: 2 });
+    expect((await create("마지막", "2026-11-07")).dailyOrder).toBe(5);
+    const day = (await (await createDemoTransport(storage).request("/api/tasks?view=day&date=2026-11-07")).json()).items;
+    expect(day.map((task: { dailyOrder: number }) => task.dailyOrder)).toEqual([1, 3, 4, 5]);
+    expect(day[1]).toEqual(edited);
+  });
+
+  it("swaps adjacent rows of every status, versions both tasks, and replays the original move only once", async () => {
+    const storage = memoryStorage();
+    let instant = new Date("2026-11-07T00:00:00.000Z");
+    const demo = createDemoTransport(storage, () => instant);
+    const first = await (await demo.request("/api/tasks", mutation("POST", { title: "먼저", scheduledDate: "2026-11-07", priority: "low", kind: "event" }))).json();
+    instant = new Date("2026-11-07T00:00:01.000Z");
+    const second = await (await demo.request("/api/tasks", mutation("POST", { title: "다음", scheduledDate: "2026-11-07", priority: "high", kind: "appointment" }))).json();
+    const completed = await (await demo.request(`/api/tasks/${first.id}`, mutation("PATCH", { status: "completed" }, 1))).json();
+    const canceled = await (await demo.request(`/api/tasks/${second.id}`, mutation("PATCH", { status: "canceled" }, 1))).json();
+    instant = new Date("2026-11-07T00:00:02.000Z");
+    const requestKey = crypto.randomUUID(), request = mutation("PATCH", { move: "up" }, 2, requestKey);
+    const response = await demo.request(`/api/tasks/${second.id}`, request);
+    expect(response.status).toBe(200); expect(response.headers.get("ETag")).toBe('"v3"');
+    const moved = await response.json();
+    expect(moved).toEqual({ ...canceled, dailyOrder: 1, version: 3, updatedAt: instant.toISOString() });
+    const neighbor = await (await demo.request(`/api/tasks/${first.id}`)).json();
+    expect(neighbor).toEqual({ ...completed, dailyOrder: 2, version: 3, updatedAt: instant.toISOString() });
+    expect((await (await demo.request("/api/tasks?view=day&date=2026-11-07")).json()).items.map((task: { id: string }) => task.id)).toEqual([second.id, first.id]);
+    expect((await (await demo.request("/api/tasks?view=inbox")).json()).items.map((task: { id: string }) => task.id)).toEqual([first.id, second.id]);
+    expect((await demo.request(`/api/tasks/${first.id}`, mutation("PATCH", { title: "오래된 이웃 수정" }, 2))).status).toBe(412);
+    expect((await demo.request(`/api/tasks/${second.id}`, mutation("PATCH", { move: "down" }, 3))).status).toBe(200);
+    const before = storage.getItem(key);
+    const replay = await createDemoTransport(storage, () => instant).request(`/api/tasks/${second.id}`, request);
+    expect(replay.status).toBe(200); expect(await replay.json()).toEqual(moved);
+    expect(storage.getItem(key)).toBe(before);
+    expect((await (await demo.request("/api/tasks?view=day&date=2026-11-07")).json()).items.map((task: { id: string }) => task.id)).toEqual([first.id, second.id]);
+    expect((await demo.request(`/api/tasks/${second.id}`, mutation("PATCH", { move: "down" }, 2, requestKey))).status).toBe(409);
+  });
+
+  it("treats boundary moves as replayable no-ops and rejects undated or combined move requests", async () => {
+    const storage = memoryStorage(), demo = createDemoTransport(storage);
+    const first = await (await demo.request("/api/tasks", mutation("POST", { title: "첫째", scheduledDate: "2026-11-07" }))).json();
+    const last = await (await demo.request("/api/tasks", mutation("POST", { title: "마지막", scheduledDate: "2026-11-07" }))).json();
+    const inbox = await (await demo.request("/api/tasks", mutation("POST", { title: "날짜 없음" }))).json();
+    for (const [task, move] of [[first, "up"], [last, "down"]] as const) {
+      const request = mutation("PATCH", { move }, 1);
+      const response = await demo.request(`/api/tasks/${task.id}`, request);
+      expect(response.status).toBe(200); expect(response.headers.get("ETag")).toBe('"v1"');
+      expect(await response.json()).toEqual(task);
+      expect(await (await createDemoTransport(storage).request(`/api/tasks/${task.id}`, request)).json()).toEqual(task);
+    }
+    const before = storage.getItem(key);
+    for (const input of [{ move: "left" }, { move: null }, { move: "down", title: "동시 수정" }, { move: "up", scheduledDate: "2026-11-08" }, { dailyOrder: 9 }]) {
+      expect((await demo.request(`/api/tasks/${first.id}`, mutation("PATCH", input, 1))).status).toBe(422);
+    }
+    expect((await demo.request(`/api/tasks/${inbox.id}`, mutation("PATCH", { move: "up" }, 1))).status).toBe(422);
+    expect((await demo.request("/api/tasks", mutation("POST", { title: "새 항목", move: "up" }))).status).toBe(422);
+    expect(storage.getItem(key)).toBe(before);
+  });
+
+  it("backfills chronological daily order for v1 through v4 without rewriting reads or inventing historical response order", async () => {
+    const timestamp = "2026-11-07T00:00:00.000Z", instant = new Date(timestamp);
+    const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
+    for (const schemaVersion of [1, 2, 3, 4]) {
+      const storage = memoryStorage(), requestKey = crypto.randomUUID();
+      const tasks = Array.from({ length: 7 }, (_, index) => ({ id: id(index + 1), title: `기존 ${index + 1}`, status: "open", priority: "high", kind: "event",
+        scheduledDate: "2026-11-07" as string | null, isUnprocessed: false, version: 1, createdAt: index === 6 ? "2026-11-06T00:00:00.000Z" : timestamp, updatedAt: timestamp, completedAt: null }));
+      const oldResponse = { ...tasks[2], title: "이전 제목", scheduledDate: "2026-11-06" };
+      const requestInput = { title: "이전 제목", scheduledDate: "2026-11-06" };
+      const legacy = { schemaVersion, timezone: "Asia/Seoul", settingsVersion: 1,
+        tasks: [...tasks].reverse().concat([{ ...tasks[0], id: id(8), title: "날짜 없음", scheduledDate: null, isUnprocessed: true }], [{ ...tasks[0], id: id(9), title: "다른 날짜", scheduledDate: "2026-11-08" }]),
+        journals: [{ date: "2026-11-07", content: "이전 자유글", version: 1, updatedAt: timestamp }], journalRequests: [],
+        schedules: [{ date: "2026-11-07", slots: [{ startMinute: 360, title: "이전 일정" }], version: 1, updatedAt: timestamp }], scheduleRequests: [],
+        taskRequests: schemaVersion === 4 ? [{ key: requestKey, method: "POST", path: "/api/tasks", input: requestInput, version: null, expiresAt: "2026-11-08T00:00:00.000Z", response: oldResponse }] : [] };
+      const raw = JSON.stringify(legacy, (field, value) => schemaVersion === 1 && ["priority", "kind"].includes(field) ? undefined : value); storage.setItem(key, raw);
+      const demo = createDemoTransport(storage, () => instant);
+      const day = (await (await demo.request("/api/tasks?view=day&date=2026-11-07")).json()).items;
+      expect(day.map((task: { id: string }) => task.id)).toEqual([id(7), id(1), id(2), id(3), id(4), id(5), id(6)]);
+      expect(day.map((task: { dailyOrder: number }) => task.dailyOrder)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(await (await demo.request(`/api/tasks/${id(8)}`)).json()).toMatchObject({ dailyOrder: null });
+      expect(await (await demo.request(`/api/tasks/${id(9)}`)).json()).toMatchObject({ dailyOrder: 1 });
+      if (schemaVersion === 4) {
+        const replay = await demo.request("/api/tasks", mutation("POST", requestInput, undefined, requestKey));
+        expect(replay.status).toBe(201); expect(await replay.json()).toEqual({ ...oldResponse, dailyOrder: null });
+      }
+      expect(storage.getItem(key)).toBe(raw);
+      const move = mutation("PATCH", { move: "down" }, 1), setter = vi.spyOn(storage, "setItem").mockImplementation(() => { throw new Error("Quota exceeded"); });
+      expect((await demo.request(`/api/tasks/${id(7)}`, move)).status).toBe(500);
+      expect(storage.getItem(key)).toBe(raw); setter.mockRestore();
+      expect((await demo.request(`/api/tasks/${id(7)}`, move)).status).toBe(200);
+      const upgraded = storage.getItem(key); expect(JSON.parse(upgraded ?? "{}").schemaVersion).toBe(5);
+      const restored = createDemoTransport(storage, () => instant);
+      expect((await (await restored.request("/api/tasks?view=day&date=2026-11-07")).json()).items.map((task: { id: string }) => task.id)).toEqual([id(1), id(7), id(2), id(3), id(4), id(5), id(6)]);
+      expect(await (await restored.request(`/api/tasks/${id(1)}`)).json()).toMatchObject({ priority: schemaVersion === 1 ? "medium" : "high", kind: schemaVersion === 1 ? "task" : "event" });
+      if (schemaVersion >= 3) expect(await (await restored.request("/api/journal/2026-11-07")).json()).toEqual(legacy.journals[0]);
+      if (schemaVersion === 4) {
+        expect(await (await restored.request("/api/schedule/2026-11-07")).json()).toEqual(legacy.schedules[0]);
+        expect(await (await restored.request("/api/tasks", mutation("POST", requestInput, undefined, requestKey))).json()).toEqual({ ...oldResponse, dailyOrder: null });
+      }
+      expect(storage.getItem(key)).toBe(upgraded);
+    }
+  });
+
+  it("commits both swapped task rows and their replay record atomically", async () => {
+    const storage = memoryStorage(), demo = createDemoTransport(storage);
+    const first = await (await demo.request("/api/tasks", mutation("POST", { title: "먼저", scheduledDate: "2026-11-07" }))).json();
+    const second = await (await demo.request("/api/tasks", mutation("POST", { title: "다음", scheduledDate: "2026-11-07" }))).json();
+    const before = storage.getItem(key), request = mutation("PATCH", { move: "up" }, 1);
+    const setter = vi.spyOn(storage, "setItem").mockImplementation(() => { throw new Error("Quota exceeded"); });
+    expect((await demo.request(`/api/tasks/${second.id}`, request)).status).toBe(500);
+    expect(storage.getItem(key)).toBe(before);
+    expect(await (await demo.request(`/api/tasks/${first.id}`)).json()).toEqual(first);
+    expect(await (await demo.request(`/api/tasks/${second.id}`)).json()).toEqual(second);
+    setter.mockRestore();
+    const saved = await demo.request(`/api/tasks/${second.id}`, request); expect(saved.status).toBe(200);
+    const moved = await saved.json(); expect(moved).toMatchObject({ dailyOrder: 1, version: 2 });
+    expect(await (await demo.request(`/api/tasks/${first.id}`)).json()).toMatchObject({ dailyOrder: 2, version: 2 });
+    const after = storage.getItem(key), replay = await createDemoTransport(storage).request(`/api/tasks/${second.id}`, request);
+    expect(replay.status).toBe(200); expect(await replay.json()).toEqual(moved);
+    expect(storage.getItem(key)).toBe(after);
+  });
+
+  it("rejects missing, duplicate or invalid current daily positions without resetting stored tasks", async () => {
+    const storage = memoryStorage(), demo = createDemoTransport(storage);
+    const first = await (await demo.request("/api/tasks", mutation("POST", { title: "첫째", scheduledDate: "2026-11-07" }))).json();
+    const second = await (await demo.request("/api/tasks", mutation("POST", { title: "둘째", scheduledDate: "2026-11-07" }))).json();
+    const valid = JSON.parse(storage.getItem(key) ?? "{}");
+    for (const dailyOrder of [undefined, null, 0, -1, 1.5, "1"]) {
+      const corrupted = JSON.stringify({ ...valid, tasks: [{ ...first, dailyOrder }, second] }); storage.setItem(key, corrupted);
+      expect(() => createDemoTransport(storage)).toThrow("손상");
+      expect((await demo.request(`/api/tasks/${first.id}`, mutation("PATCH", { move: "down" }, 1))).status).toBe(500);
+      expect(storage.getItem(key)).toBe(corrupted);
+    }
+    for (const corrupted of [
+      JSON.stringify({ ...valid, tasks: [first, { ...second, dailyOrder: 1 }] }),
+      JSON.stringify({ ...valid, tasks: [{ ...first, scheduledDate: null }, second] }),
+      JSON.stringify({ ...valid, taskRequests: [{ ...valid.taskRequests[0], response: { ...first, dailyOrder: undefined } }] })
+    ]) {
+      storage.setItem(key, corrupted); expect(() => createDemoTransport(storage)).toThrow("손상"); expect(storage.getItem(key)).toBe(corrupted);
     }
   });
 
@@ -634,7 +786,7 @@ describe("browser-only demo transport", () => {
       expect(storage.getItem(key)).toBe(raw); setter.mockRestore();
       expect((await demo.request("/api/schedule/2026-11-07", scheduleMutation([{ startMinute: 360, title: "새 일정" }]))).status).toBe(200);
       const restored = createDemoTransport(storage, () => instant);
-      expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(4);
+      expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(5);
       expect(await (await restored.request(`/api/tasks/${task.id}`)).json()).toEqual(task);
       if (schemaVersion === 3) {
         expect(await (await restored.request("/api/journal/2026-11-07")).json()).toEqual(journal);

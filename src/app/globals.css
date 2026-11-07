@@ -242,3 +242,27 @@ body:has(.diary-app) .site-footer { max-width: 1408px; }
   .principles article { gap: 18px; }
   .site-footer { margin: 0 24px; gap: 20px; line-height: 1.7; }
 }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.daily-task-lines, .daily-legacy ol { list-style: none; margin: 12px 0 0; padding: 0; }
+.daily-task-row { position: relative; min-height: 62px; padding: 8px 0; border-bottom: 1px solid #cdd6c4; }
+.daily-task-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.daily-status-wrap { padding: 0; margin: 0; border: 0; min-width: 0; position: relative; flex: 0 0 30px; }
+.planner .daily-status { display: flex; align-items: center; justify-content: center; width: 30px; min-height: 36px; padding: 0; border: 0; background: transparent; }
+.daily-task-row .daily-status .bullet-symbol { font-size: 25px; line-height: 1; color: #435e3d; }
+.daily-task-row.completed .bullet-symbol { color: #435e3d; }
+.daily-task-row.deferred .bullet-symbol { color: #855a22; }
+.daily-task-row.canceled .bullet-symbol { color: #8a594e; }
+.planner .daily-task-line input { flex: 1; width: 0; min-width: 0; min-height: 42px; padding: 8px 3px; border: 0; border-radius: 0; background: transparent; font-size: 14px; }
+.planner .daily-task-line input:focus { outline-offset: 0; background: #f0f5e9; }
+.daily-task-line input:disabled { color: #718066; opacity: .7; }
+.daily-task-row.completed input, .daily-task-row.canceled input { text-decoration: line-through; color: #62735a; }
+.daily-row-number { flex-shrink: 0; color: #66765d; font: 11px Georgia, serif; }
+.daily-row-actions, .daily-save-controls { display: flex; justify-content: flex-end; gap: 5px; margin-top: 3px; }
+.planner .daily-row-actions button { background: transparent; border-color: #d3dccb; font-size: 11px; min-height: 28px; padding: 3px 8px; }
+.planner .daily-row-actions button[title] { min-width: 30px; font-size: 15px; }
+.planner .daily-save-controls button { font-size: 11px; min-height: 30px; padding: 4px 9px; }
+.daily-status-menu { position: absolute; top: 35px; left: 0; z-index: 3; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; width: 190px; padding: 10px; margin: 0; border: 1px solid #b5c2a8; border-radius: 6px; background: #fffef8; box-shadow: 0 8px 18px #233c3a20; }
+.planner .daily-status-menu button { display: flex; align-items: center; gap: 8px; background: #f1f4e9; padding: 8px; font-size: 12px; }
+.daily-legacy { margin-top: 14px; font-size: 12px; }
+.daily-legacy-toggle { padding: 8px 0; cursor: pointer; }

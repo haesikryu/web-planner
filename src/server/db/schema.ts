@@ -33,7 +33,7 @@ export const tasks = pgTable("tasks", {
   id: uuid("id").primaryKey().defaultRandom(), ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   title: text("title").notNull(), status: text("status").notNull().default("open"),
   priority: text("priority").notNull().default("medium"), kind: text("kind").notNull().default("task"),
-  scheduledDate: date("scheduled_date"), dueDate: date("due_date"), isUnprocessed: boolean("is_unprocessed").notNull().default(true),
+  scheduledDate: date("scheduled_date"), dailyOrder: integer("daily_order"), dueDate: date("due_date"), isUnprocessed: boolean("is_unprocessed").notNull().default(true),
   completedAt: instant("completed_at"), version: integer("version").notNull().default(1),
   createdAt: instant("created_at").notNull().defaultNow(), updatedAt: instant("updated_at").notNull().defaultNow()
 }, t => [unique("task_owner_unique").on(t.id, t.ownerId),
@@ -41,16 +41,18 @@ export const tasks = pgTable("tasks", {
   check("task_version", sql`${t.version} > 0`),
   check("task_priority", sql`${t.priority} IN ('high', 'medium', 'low')`),
   check("task_kind", sql`${t.kind} IN ('task', 'appointment', 'event')`),
+  check("task_daily_order", sql`(${t.scheduledDate} IS NULL AND ${t.dailyOrder} IS NULL) OR (${t.scheduledDate} IS NOT NULL AND ${t.dailyOrder} IS NOT NULL AND ${t.dailyOrder} > 0)`),
   check("task_completion", sql`(${t.status} IN ('open', 'deferred', 'canceled') AND ${t.completedAt} IS NULL) OR (${t.status} = 'completed' AND ${t.completedAt} IS NOT NULL)`),
   index("task_inbox_idx").on(t.ownerId, t.isUnprocessed, t.createdAt, t.id),
-  index("task_date_idx").on(t.ownerId, t.status, t.scheduledDate, t.id), index("task_completed_idx").on(t.ownerId, t.completedAt, t.id)]);
+  index("task_date_idx").on(t.ownerId, t.status, t.scheduledDate, t.id), index("task_completed_idx").on(t.ownerId, t.completedAt, t.id),
+  index("task_day_order_idx").on(t.ownerId, t.scheduledDate, t.dailyOrder, t.createdAt, t.id)]);
 export const taskActivities = pgTable("task_activities", {
   id: uuid("id").primaryKey().defaultRandom(), ownerId: text("owner_id").notNull(), taskId: uuid("task_id").notNull(),
   type: text("type").notNull(), occurredAt: instant("occurred_at").notNull().defaultNow(), invalidatedBy: uuid("invalidated_by")
 }, t => [unique("activity_owner_task_unique").on(t.id, t.ownerId, t.taskId),
   foreignKey({ columns: [t.taskId, t.ownerId], foreignColumns: [tasks.id, tasks.ownerId] }).onDelete("cascade"),
   foreignKey({ columns: [t.invalidatedBy, t.ownerId, t.taskId], foreignColumns: [t.id, t.ownerId, t.taskId] }),
-  check("activity_type", sql`${t.type} IN ('completed', 'completion_undone', 'scheduled_date_changed', 'processing_changed', 'deferred', 'canceled', 'reopened', 'priority_changed', 'kind_changed')`),
+  check("activity_type", sql`${t.type} IN ('completed', 'completion_undone', 'scheduled_date_changed', 'processing_changed', 'deferred', 'canceled', 'reopened', 'priority_changed', 'kind_changed', 'order_changed')`),
   check("activity_invalidation", sql`${t.invalidatedBy} IS NULL OR (${t.type} = 'completed' AND ${t.invalidatedBy} <> ${t.id})`),
   uniqueIndex("activity_active_completion_unique").on(t.taskId).where(sql`${t.type} = 'completed' AND ${t.invalidatedBy} IS NULL`),
   index("activity_task_idx").on(t.taskId, t.occurredAt)]);

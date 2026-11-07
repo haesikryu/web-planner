@@ -2,6 +2,22 @@ import { type Page, expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { Temporal } from "@js-temporal/polyfill";
 
+
+function dailyRow(page: Page, title: string) {
+  return page.locator(".daily-task-row[data-task-id]").filter({ has: page.getByRole("button", { name: `${title} 상태 변경`, exact: true }) });
+}
+async function addDaily(page: Page, title: string) {
+  const index = await page.locator(".daily-task-row[data-task-id]").count() + 1;
+  const input = page.getByRole("textbox", { name: `${index}번째 할 일`, exact: true });
+  await input.fill(title);
+  await input.press("Enter");
+  await expect(dailyRow(page, title)).toBeVisible();
+}
+async function setDailyStatus(page: Page, title: string, state: "완료" | "미루기" | "진행 전" | "취소") {
+  await dailyRow(page, title).getByRole("button", { name: `${title} 상태 변경`, exact: true }).click();
+  await page.getByRole("group", { name: `${title} 상태 선택`, exact: true }).getByRole("button", { name: state, exact: true }).click();
+}
+
 async function openHistory(page: Page) {
   const history = page.locator("details").filter({ has: page.getByText("이전 기록과 입력함", { exact: true }) });
   if (await history.getAttribute("open") === null) await history.locator("summary").click();
@@ -15,14 +31,10 @@ test("diary pages create directly on the selected day and retain the actual comp
   const tomorrow = Temporal.PlainDate.from(today).add({ days: 1 });
   await page.getByRole("button", { name: "다음 날", exact: true }).click();
   await expect(page.locator(".date-line")).toContainText(tomorrow.toString());
-  await page.getByLabel("할 일 입력").fill("다음 페이지의 할 일");
-  await page.getByRole("button", { name: "할 일 추가" }).click();
-  const nextDay = page.getByRole("region", { name: "이날의 할 일", exact: true });
-  await expect(nextDay.getByText("다음 페이지의 할 일", { exact: true })).toBeVisible();
-  await page.getByLabel("할 일 입력").fill("보존할 미저장 입력");
+  await addDaily(page, "다음 페이지의 할 일");
+  await expect(dailyRow(page, "다음 페이지의 할 일")).toBeVisible();
   await page.getByRole("button", { name: "이전 날", exact: true }).click();
-  await expect(page.getByRole("region", { name: "오늘의 할 일", exact: true }).getByText("다음 페이지의 할 일", { exact: true })).toHaveCount(0);
-  await expect(page.getByLabel("할 일 입력")).toHaveValue("보존할 미저장 입력");
+  await expect(dailyRow(page, "다음 페이지의 할 일")).toHaveCount(0);
   const calendarToggle = page.getByRole("button", { name: "달력 보기", exact: true });
   if (await calendarToggle.isVisible()) await calendarToggle.click();
   await page.getByRole("button", { name: "다음 달", exact: true }).click();
@@ -30,13 +42,12 @@ test("diary pages create directly on the selected day and retain the actual comp
   await page.getByRole("button", { name: "이전 달", exact: true }).click();
   if (tomorrow.month !== Temporal.PlainDate.from(today).month) await page.getByRole("button", { name: "다음 달", exact: true }).click();
   await page.getByRole("button", { name: `${tomorrow.day}, ${tomorrow.year}년 ${tomorrow.month}월 ${tomorrow.day}일`, exact: true }).click();
-  await nextDay.getByRole("button", { name: "완료", exact: true }).click();
-  await expect(nextDay.locator(".bullet-symbol")).toHaveText("✓");
+  await setDailyStatus(page, "다음 페이지의 할 일", "완료");
+  await expect(dailyRow(page, "다음 페이지의 할 일").locator(".bullet-symbol")).toHaveText("✓");
   await expect(page.getByRole("status")).toContainText(`${today}의 완료 기록`);
   await page.getByRole("button", { name: "이전 날", exact: true }).click();
   await openHistory(page);
   await expect(page.getByRole("region", { name: "오늘 완료", exact: true }).getByText("다음 페이지의 할 일", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("할 일 입력")).toHaveValue("보존할 미저장 입력");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -47,20 +58,18 @@ test("paused login offers a working demo with tab persistence and no product API
   await expect(page.getByRole("button", { name: "Google로 시작하기" })).toBeDisabled();
   await page.getByRole("link", { name: "로그인 없이 테스트하기" }).click();
   await expect(page.getByRole("status")).toHaveText("이 탭에 저장된 테스트 목록입니다.");
-  await page.getByLabel("할 일 입력").fill("테스트 할 일");
-  await page.getByRole("button", { name: "할 일 추가", exact: true }).click();
-  const scheduled = page.getByRole("region", { name: "오늘의 할 일", exact: true });
-  await expect(scheduled.getByText("테스트 할 일", { exact: true })).toBeVisible();
-  await scheduled.getByRole("button", { name: "수정", exact: true }).click();
-  await page.getByLabel("제목", { exact: true }).fill("수정한 테스트 할 일");
-  await page.getByRole("button", { name: "변경 저장", exact: true }).click();
-  await expect(scheduled.getByText("수정한 테스트 할 일", { exact: true })).toBeVisible();
-  await scheduled.getByRole("button", { name: "완료", exact: true }).click();
-  await expect(scheduled.locator(".bullet-symbol")).toHaveText("✓");
-  await scheduled.getByRole("button", { name: "완료 취소", exact: true }).click();
-  await expect(scheduled.getByText("수정한 테스트 할 일", { exact: true })).toBeVisible();
+  await addDaily(page, "테스트 할 일");
+  const row = dailyRow(page, "테스트 할 일");
+  await row.getByRole("textbox").fill("수정한 테스트 할 일");
+  await row.getByRole("textbox").press("Enter");
+  const renamed = dailyRow(page, "수정한 테스트 할 일");
+  await expect(renamed).toBeVisible();
+  await setDailyStatus(page, "수정한 테스트 할 일", "완료");
+  await expect(renamed.locator(".bullet-symbol")).toHaveText("✓");
+  await setDailyStatus(page, "수정한 테스트 할 일", "진행 전");
+  await expect(renamed.locator(".bullet-symbol")).toHaveText("□");
   await page.reload();
-  await expect(scheduled.getByText("수정한 테스트 할 일", { exact: true })).toBeVisible();
+  await expect(renamed.getByRole("textbox")).toHaveValue("수정한 테스트 할 일");
   const schedule = page.getByRole("region", { name: "하루 일정", exact: true });
   await schedule.getByLabel("06:00 일정", { exact: true }).fill("제품 API 없이 저장할 일정");
   await schedule.getByRole("button", { name: "일정 저장", exact: true }).click();
@@ -91,94 +100,80 @@ test("unavailable browser storage shows an actionable error instead of a broken 
   });
   await page.goto("/demo");
   await expect(page.getByRole("main").getByRole("alert")).toContainText("테스트 저장소를 열 수 없습니다");
-  await expect(page.getByLabel("할 일 입력")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "1번째 할 일", exact: true })).toHaveCount(0);
   await page.getByRole("link", { name: "홈으로 돌아가기" }).click();
   await expect(page.getByRole("link", { name: "로그인 없이 테스트하기" })).toBeVisible();
 });
 
 
-test("direct daily capture and priority persist through status changes and editing", async ({ page }) => {
+test("status menus preserve daily rows and the date editor locks other changes", async ({ page }) => {
   await page.goto("/demo");
   await expect(page.getByRole("status")).toHaveText("이 탭에 저장된 테스트 목록입니다.", { timeout: 15000 });
-  const scheduled = page.getByRole("region", { name: "오늘의 할 일", exact: true });
-  await expect(scheduled.getByRole("textbox", { name: "할 일 입력", exact: true })).toHaveCount(1);
-  await expect(page.getByRole("combobox", { name: /유형/ })).toHaveCount(0);
-  await expect(page.locator(".symbol-legend").filter({ hasText: /약속|행사/ })).toHaveCount(0);
-  await page.getByLabel("할 일 입력").fill("상태 변경 확인");
-  await page.getByRole("button", { name: "할 일 추가", exact: true }).click();
-  const activeCard = scheduled.locator("[data-task-id]").filter({ hasText: "상태 변경 확인" });
-  await expect(activeCard).toBeVisible();
-  await expect(activeCard.locator(".bullet-symbol")).toHaveText("□");
-  await expect(activeCard.locator(".bullet-symbol")).toHaveAttribute("aria-label", "진행 전");
-  await expect(activeCard.getByLabel("상태 변경 확인 우선순위", { exact: true })).toHaveValue("medium");
-  await activeCard.getByLabel("상태 변경 확인 우선순위", { exact: true }).selectOption("high");
-  await expect(activeCard.getByLabel("상태 변경 확인 우선순위", { exact: true })).toHaveValue("high");
-  await page.reload();
-  await expect(activeCard.getByLabel("상태 변경 확인 우선순위", { exact: true })).toHaveValue("high");
-  await activeCard.getByLabel("상태 변경 확인 우선순위", { exact: true }).selectOption("low");
-  await activeCard.getByLabel("상태 변경 확인 상태", { exact: true }).selectOption("deferred");
-  await expect(activeCard.locator(".bullet-symbol")).toHaveText("→");
+  await expect(page.getByRole("combobox", { name: /유형|우선순위/ })).toHaveCount(0);
+  await expect(page.locator(".priority-badge")).toHaveCount(0);
+  await addDaily(page, "상태 변경 확인");
+  const active = dailyRow(page, "상태 변경 확인");
+  await expect(active.locator(".bullet-symbol")).toHaveText("□");
+  const toggle = active.getByRole("button", { name: "상태 변경 확인 상태 변경", exact: true });
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  const menu = page.getByRole("group", { name: "상태 변경 확인 상태 선택", exact: true });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole("button")).toHaveCount(4);
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await setDailyStatus(page, "상태 변경 확인", "미루기");
+  await expect(active.locator(".bullet-symbol")).toHaveText("→");
   const currentDay = (await page.locator(".date-line").textContent() ?? "").slice(0, 10);
+  const tomorrow = Temporal.PlainDate.from(currentDay).add({ days: 1 }).toString();
   await page.getByRole("button", { name: "다음 날", exact: true }).click();
-  await expect(page.locator(".date-line")).toContainText(Temporal.PlainDate.from(currentDay).add({ days: 1 }).toString());
+  await expect(page.locator(".date-line")).toContainText(tomorrow);
   await openHistory(page);
-  const overdueCard = page.getByRole("region", { name: "이전 날짜의 미완료", exact: true }).locator("[data-task-id]").filter({ hasText: "상태 변경 확인" });
-  await expect(overdueCard.locator(".bullet-symbol")).toHaveText("→");
-  await expect(overdueCard.getByRole("combobox", { name: /우선순위/ })).toHaveCount(0);
+  const overdue = page.getByRole("region", { name: "이전 날짜의 미완료", exact: true }).locator("[data-task-id]").filter({ hasText: "상태 변경 확인" });
+  await expect(overdue.locator(".bullet-symbol")).toHaveText("→");
   await page.getByRole("button", { name: "이전 날", exact: true }).click();
-  await activeCard.getByLabel("상태 변경 확인 상태", { exact: true }).selectOption("canceled");
-  await expect(activeCard.locator(".bullet-symbol")).toHaveText("×");
+  await setDailyStatus(page, "상태 변경 확인", "취소");
+  await expect(active.locator(".bullet-symbol")).toHaveText("×");
   await page.getByRole("button", { name: "다음 날", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("이 탭에 저장된 테스트 목록입니다.");
-  await expect(overdueCard).toHaveCount(0);
+  await expect(overdue).toHaveCount(0);
   await page.getByRole("button", { name: "이전 날", exact: true }).click();
-  await activeCard.getByLabel("상태 변경 확인 상태", { exact: true }).selectOption("open");
-  await activeCard.getByLabel("상태 변경 확인 상태", { exact: true }).selectOption("completed");
-  await expect(activeCard.locator(".bullet-symbol")).toHaveText("✓");
-  const doneCard = page.getByRole("region", { name: "오늘 완료", exact: true }).locator("[data-task-id]").filter({ hasText: "상태 변경 확인" });
-  await expect(doneCard.locator(".bullet-symbol")).toHaveText("✓");
-  await expect(doneCard.getByRole("combobox", { name: /우선순위/ })).toHaveCount(0);
-  await activeCard.getByRole("button", { name: "완료 취소", exact: true }).click();
-  await expect(activeCard.locator(".bullet-symbol")).toHaveText("□");
-  await page.getByLabel("할 일 입력").fill("편집 중 보호할 다른 일");
-  await page.getByRole("button", { name: "할 일 추가", exact: true }).click();
-  const otherCard = scheduled.locator("[data-task-id]").filter({ hasText: "편집 중 보호할 다른 일" });
-  await expect(otherCard).toBeVisible();
-  await activeCard.getByRole("button", { name: "수정", exact: true }).click();
+  await setDailyStatus(page, "상태 변경 확인", "완료");
+  await expect(active.locator(".bullet-symbol")).toHaveText("✓");
+  await expect(page.getByRole("region", { name: "오늘 완료", exact: true }).getByText("상태 변경 확인", { exact: true })).toBeVisible();
+  await setDailyStatus(page, "상태 변경 확인", "진행 전");
+  await expect(active.locator(".bullet-symbol")).toHaveText("□");
+  await addDaily(page, "편집 중 보호할 다른 일");
+  const other = dailyRow(page, "편집 중 보호할 다른 일");
+  await active.getByRole("button", { name: "수정", exact: true }).click();
   const editor = page.locator(".edit-panel");
+  await editor.getByLabel("실행 예정일", { exact: true }).fill(tomorrow);
   await expect(editor.getByRole("combobox", { name: /유형|우선순위/ })).toHaveCount(0);
-  await editor.getByLabel("제목", { exact: true }).fill("보존할 미저장 편집 제목");
-  await expect(page.getByLabel("할 일 입력")).toBeDisabled();
-  await expect(page.getByRole("button", { name: "할 일 추가", exact: true })).toBeDisabled();
+  await expect(other.getByRole("textbox")).toBeDisabled();
+  await expect(other.getByRole("button", { name: "편집 중 보호할 다른 일 상태 변경", exact: true })).toBeDisabled();
+  await expect(other.getByRole("button", { name: "편집 중 보호할 다른 일 위로 이동", exact: true })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "3번째 할 일", exact: true })).toBeDisabled();
   await expect(page.getByRole("textbox", { name: "자유롭게 쓰는 글", exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "글 저장", exact: true })).toBeDisabled();
   await expect(page.getByLabel("06:00 일정", { exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "일정 저장", exact: true })).toBeDisabled();
-  await expect(otherCard.getByLabel("편집 중 보호할 다른 일 우선순위", { exact: true })).toBeDisabled();
-  await expect(otherCard.getByLabel("편집 중 보호할 다른 일 상태", { exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "다음 날", exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "이전 날", exact: true })).toBeDisabled();
   await page.getByText(/기준 시간대 설정/).click();
   await expect(page.getByLabel("IANA 시간대")).toBeDisabled();
-  await expect(page.getByRole("button", { name: "시간대 적용", exact: true })).toBeDisabled();
-  await expect(editor.getByLabel("제목", { exact: true })).toHaveValue("보존할 미저장 편집 제목");
-  await editor.getByLabel("제목", { exact: true }).fill("상태 변경 확인");
+  await expect(editor.getByLabel("실행 예정일", { exact: true })).toHaveValue(tomorrow);
+  await editor.getByLabel("실행 예정일", { exact: true }).fill(currentDay);
   await editor.getByRole("button", { name: "변경 저장", exact: true }).click();
-  await expect(activeCard.getByLabel("상태 변경 확인 우선순위", { exact: true })).toBeEnabled();
+  await expect(other.getByRole("textbox")).toBeEnabled();
   await page.reload();
-  await expect(activeCard.getByLabel("상태 변경 확인 우선순위", { exact: true })).toHaveValue("low");
-  await expect(activeCard.locator(".bullet-symbol")).toHaveText("□");
+  await expect(active.locator(".bullet-symbol")).toHaveText("□");
+  await expect(page.getByRole("textbox", { name: "1번째 할 일", exact: true })).toHaveValue("상태 변경 확인");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
 test("an unscheduled organized completion returns to inbox after cancellation or completion undo", async ({ page }) => {
   await page.goto("/demo");
-  await page.getByLabel("할 일 입력").fill("날짜 없는 기록");
-  await page.getByRole("button", { name: "할 일 추가", exact: true }).click();
-  await expect(page.getByRole("region", { name: "오늘의 할 일", exact: true }).getByText("날짜 없는 기록", { exact: true })).toBeVisible();
+  await addDaily(page, "날짜 없는 기록");
   await page.evaluate(() => {
     const state = JSON.parse(sessionStorage.getItem("web-planner:demo:v1") ?? "null");
-    Object.assign(state.tasks[0], { scheduledDate: null, isUnprocessed: true });
+    Object.assign(state.tasks[0], { scheduledDate: null, dailyOrder: null, isUnprocessed: true });
     sessionStorage.setItem("web-planner:demo:v1", JSON.stringify(state));
   });
   await page.reload();
@@ -218,10 +213,7 @@ test("an unscheduled organized completion returns to inbox after cancellation or
 
 test("legacy appointment data uses the common status symbol and survives title editing", async ({ page }) => {
   await page.goto("/demo");
-  await page.getByLabel("할 일 입력").fill("이전에 저장한 기록");
-  await page.getByRole("button", { name: "할 일 추가", exact: true }).click();
-  const inbox = page.getByRole("region", { name: "오늘의 할 일", exact: true });
-  await expect(inbox.getByText("이전에 저장한 기록", { exact: true })).toBeVisible();
+  await addDaily(page, "이전에 저장한 기록");
   const today = (await page.locator(".date-line").textContent() ?? "").slice(0, 10);
   // Seed an entry saved by the earlier UI; editing must preserve compatible stored fields.
   await page.evaluate(date => {
@@ -230,23 +222,17 @@ test("legacy appointment data uses the common status symbol and survives title e
     sessionStorage.setItem("web-planner:demo:v1", JSON.stringify(state));
   }, today);
   await page.reload();
-  const scheduled = page.getByRole("region", { name: "오늘의 할 일", exact: true });
-  const oldCard = scheduled.locator("[data-task-id]").filter({ hasText: "이전에 저장한 기록" });
+  const oldCard = dailyRow(page, "이전에 저장한 기록");
   await expect(oldCard.locator(".bullet-symbol")).toHaveText("□");
-  await expect(oldCard.locator(".bullet-symbol")).toHaveAttribute("aria-label", "진행 전");
-  await expect(oldCard.locator(".task-meta")).not.toContainText(/약속|행사/);
-  await expect(oldCard.getByLabel("이전에 저장한 기록 우선순위", { exact: true })).toHaveValue("high");
+  await expect(page.getByRole("combobox", { name: /유형|우선순위/ })).toHaveCount(0);
+  await expect(page.locator(".priority-badge")).toHaveCount(0);
   await expect(page.locator(".symbol-legend").filter({ hasText: /약속|행사/ })).toHaveCount(0);
-  await oldCard.getByRole("button", { name: "수정", exact: true }).click();
-  const editor = page.locator(".edit-panel");
-  await expect(editor.getByRole("combobox", { name: /유형|우선순위/ })).toHaveCount(0);
-  await editor.getByLabel("제목", { exact: true }).fill("제목을 고친 이전 기록");
-  await editor.getByRole("button", { name: "변경 저장", exact: true }).click();
-  const editedCard = scheduled.locator("[data-task-id]").filter({ hasText: "제목을 고친 이전 기록" });
+  await oldCard.getByRole("textbox").fill("제목을 고친 이전 기록");
+  await oldCard.getByRole("textbox").press("Enter");
+  const editedCard = dailyRow(page, "제목을 고친 이전 기록");
   await expect(editedCard).toBeVisible();
   await page.reload();
   await expect(editedCard.locator(".bullet-symbol")).toHaveText("□");
-  await expect(editedCard.getByLabel("제목을 고친 이전 기록 우선순위", { exact: true })).toHaveValue("high");
   expect(await page.evaluate(() => {
     const state = JSON.parse(sessionStorage.getItem("web-planner:demo:v1") ?? "null");
     return { kind: state.tasks[0].kind, priority: state.tasks[0].priority, title: state.tasks[0].title };
@@ -258,7 +244,7 @@ test("left-page tasks and right-page journal preserve separate dated entries and
   await page.goto("/demo");
   await expect(page.getByRole("status")).toHaveText("이 탭에 저장된 테스트 목록입니다.", { timeout: 15000 });
   const left = page.locator(".diary-page-left"), right = page.locator(".diary-page-right");
-  await expect(left.getByLabel("할 일 입력")).toBeVisible();
+  await expect(left.getByRole("textbox", { name: "1번째 할 일", exact: true })).toBeVisible();
   await expect(left.getByRole("region", { name: "오늘의 할 일", exact: true })).toBeVisible();
   await expect(left.getByRole("region", { name: "하루 일정", exact: true })).toBeVisible();
   for (const name of ["오늘 완료", "입력함", "이전 날짜의 미완료"]) {
@@ -308,52 +294,43 @@ test("left-page tasks and right-page journal preserve separate dated entries and
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
-test("five daily tasks include completed and canceled entries until one is moved", async ({ page }) => {
+test("five sequential lines keep completed and canceled tasks until one is moved", async ({ page }) => {
   await page.goto("/demo");
   await expect(page.getByRole("status")).toHaveText("이 탭에 저장된 테스트 목록입니다.", { timeout: 15000 });
   const day = page.getByRole("region", { name: "오늘의 할 일", exact: true });
-  const input = day.getByRole("textbox", { name: "할 일 입력", exact: true });
-  const add = day.getByRole("button", { name: "할 일 추가", exact: true });
+  await expect(day.locator(".daily-task-row")).toHaveCount(5);
+  await expect(day.getByRole("textbox", { name: "1번째 할 일", exact: true })).toBeEnabled();
+  for (let index = 2; index <= 5; index++) await expect(day.getByRole("textbox", { name: `${index}번째 할 일`, exact: true })).toBeDisabled();
   for (let index = 1; index <= 5; index++) {
-    await input.fill(`하루 할 일 ${index}`);
-    await add.click();
-    await expect(day.locator("[data-task-id]")).toHaveCount(index);
+    await addDaily(page, `하루 할 일 ${index}`);
+    await expect(day.locator(".daily-task-row[data-task-id]")).toHaveCount(index);
+    if (index < 5) await expect(day.getByRole("textbox", { name: `${index + 1}번째 할 일`, exact: true })).toBeEnabled();
   }
   await expect(day).toContainText(/5\s*\/\s*5/);
-  await expect(input).toBeDisabled();
-  await expect(add).toBeDisabled();
-  const first = day.locator("[data-task-id]").filter({ hasText: "하루 할 일 1" });
-  const second = day.locator("[data-task-id]").filter({ hasText: "하루 할 일 2" });
-  await first.getByRole("button", { name: "완료", exact: true }).click();
-  await expect(first.locator(".bullet-symbol")).toHaveText("✓");
-  await second.getByLabel("하루 할 일 2 상태", { exact: true }).selectOption("canceled");
-  await expect(second.locator(".bullet-symbol")).toHaveText("×");
-  await expect(day.locator("[data-task-id]")).toHaveCount(5);
-  await expect(input).toBeDisabled();
-  await expect(add).toBeDisabled();
+  await expect(day.getByRole("textbox", { name: "6번째 할 일", exact: true })).toHaveCount(0);
+  await setDailyStatus(page, "하루 할 일 1", "완료");
+  await setDailyStatus(page, "하루 할 일 2", "취소");
+  await expect(dailyRow(page, "하루 할 일 1").locator(".bullet-symbol")).toHaveText("✓");
+  await expect(dailyRow(page, "하루 할 일 2").locator(".bullet-symbol")).toHaveText("×");
+  await expect(day.locator(".daily-task-row[data-task-id]")).toHaveCount(5);
   const date = (await page.locator(".date-line").textContent() ?? "").slice(0, 10);
   const tomorrow = Temporal.PlainDate.from(date).add({ days: 1 }).toString();
-  const moving = day.locator("[data-task-id]").filter({ hasText: "하루 할 일 3" });
+  const moving = dailyRow(page, "하루 할 일 3");
   const id = await moving.getAttribute("data-task-id");
   await moving.getByRole("button", { name: "수정", exact: true }).click();
   await page.locator(".edit-panel").getByLabel("실행 예정일", { exact: true }).fill(tomorrow);
   await page.getByRole("button", { name: "변경 저장", exact: true }).click();
-  await expect(day.locator("[data-task-id]")).toHaveCount(4);
-  await expect(input).toBeEnabled();
-  await input.fill("빈 자리에 추가한 일");
-  await add.click();
-  await expect(day.getByText("빈 자리에 추가한 일", { exact: true })).toBeVisible();
-  await expect(day.locator("[data-task-id]")).toHaveCount(5);
+  await expect(day.locator(".daily-task-row[data-task-id]")).toHaveCount(4);
+  await expect(day.getByRole("textbox", { name: "5번째 할 일", exact: true })).toBeEnabled();
+  await addDaily(page, "빈 자리에 추가한 일");
+  await expect(day.locator(".daily-task-row[data-task-id]")).toHaveCount(5);
   await page.getByRole("button", { name: "다음 날", exact: true }).click();
-  const next = page.getByRole("region", { name: "이날의 할 일", exact: true });
-  await expect(next.locator("[data-task-id]")).toHaveCount(1);
-  await expect(next.locator("[data-task-id]")).toHaveAttribute("data-task-id", id ?? "");
+  await expect(dailyRow(page, "하루 할 일 3")).toHaveAttribute("data-task-id", id ?? "");
+  await expect(page.locator(".daily-task-row[data-task-id]")).toHaveCount(1);
   await page.reload();
-  await expect(day.locator("[data-task-id]")).toHaveCount(5);
-  await expect(day.locator("[data-task-id]").filter({ hasText: "하루 할 일 1" }).locator(".bullet-symbol")).toHaveText("✓");
-  await expect(input).toBeDisabled();
+  await expect(day.locator(".daily-task-row[data-task-id]")).toHaveCount(5);
+  await expect(dailyRow(page, "하루 할 일 1").locator(".bullet-symbol")).toHaveText("✓");
 });
-
 
 test("the 36 half-hour schedule rows keep first and last slots separate by date", async ({ page }) => {
   await page.goto("/demo");
@@ -399,4 +376,51 @@ test("the 36 half-hour schedule rows keep first and last slots separate by date"
   await expect(last).toHaveValue("");
   await expect(save).toBeDisabled();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("inline title saves respect composition and row moves survive status changes and reload", async ({ page }) => {
+  await page.goto("/demo");
+  await expect(page.getByRole("status")).toHaveText("이 탭에 저장된 테스트 목록입니다.", { timeout: 15000 });
+  const first = page.getByRole("textbox", { name: "1번째 할 일", exact: true });
+  await first.dispatchEvent("compositionstart");
+  await first.fill("한글 작성");
+  await first.dispatchEvent("keydown", { key: "Enter", code: "Enter", isComposing: true, keyCode: 229 });
+  await expect(page.locator(".daily-task-row[data-task-id]")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "2번째 할 일", exact: true })).toBeDisabled();
+  await first.dispatchEvent("compositionend", { data: "한글 작성" });
+  await first.press("Enter");
+  await expect(dailyRow(page, "한글 작성")).toBeVisible();
+  const second = page.getByRole("textbox", { name: "2번째 할 일", exact: true });
+  await second.fill("두 번째 일");
+  await second.press("Tab");
+  await expect(dailyRow(page, "두 번째 일")).toBeVisible();
+  await addDaily(page, "세 번째 일");
+  const edited = dailyRow(page, "두 번째 일");
+  const id = await edited.getAttribute("data-task-id");
+  await edited.getByRole("textbox").fill("수정한 두 번째 일");
+  await edited.getByRole("button", { name: "할 일 저장", exact: true }).click();
+  const renamed = dailyRow(page, "수정한 두 번째 일");
+  await expect(renamed).toHaveAttribute("data-task-id", id ?? "");
+  await expect(page.getByRole("textbox", { name: "2번째 할 일", exact: true })).toHaveValue("수정한 두 번째 일");
+  await expect(dailyRow(page, "한글 작성").getByRole("button", { name: "한글 작성 위로 이동", exact: true })).toBeDisabled();
+  await expect(dailyRow(page, "세 번째 일").getByRole("button", { name: "세 번째 일 아래로 이동", exact: true })).toBeDisabled();
+  await renamed.getByRole("button", { name: "수정한 두 번째 일 위로 이동", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("textbox", { name: "1번째 할 일", exact: true })).toHaveValue("수정한 두 번째 일");
+  await expect(renamed.getByRole("textbox")).toBeFocused();
+  await setDailyStatus(page, "수정한 두 번째 일", "완료");
+  await expect(renamed.locator(".bullet-symbol")).toHaveText("✓");
+  await expect(renamed.getByRole("button", { name: "수정한 두 번째 일 상태 변경", exact: true })).toBeFocused();
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "1번째 할 일", exact: true })).toHaveValue("수정한 두 번째 일");
+  await expect(page.getByRole("textbox", { name: "2번째 할 일", exact: true })).toHaveValue("한글 작성");
+  await expect(renamed).toHaveAttribute("data-task-id", id ?? "");
+  await renamed.getByRole("button", { name: "수정한 두 번째 일 아래로 이동", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "2번째 할 일", exact: true })).toHaveValue("수정한 두 번째 일");
+  await expect(renamed.getByRole("button", { name: "수정한 두 번째 일 아래로 이동", exact: true })).toBeFocused();
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "2번째 할 일", exact: true })).toHaveValue("수정한 두 번째 일");
+  await expect(renamed.locator(".bullet-symbol")).toHaveText("✓");
+  await expect(page.getByRole("combobox", { name: /우선순위/ })).toHaveCount(0);
+  await expect(page.locator(".priority-badge")).toHaveCount(0);
 });
