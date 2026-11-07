@@ -66,3 +66,7 @@ API 응답은 OpenAPI JSON Schema로 검사하며 `npm run db:prune`은 만료�
 ## CI
 
 `.github/workflows/verify.yml`은 PR에서 명세·린트·타입·단위/격리 통합·빌드·브라우저 검사를 실행한다. OAuth 비밀은 CI에 넣지 않으며 합성 키·토큰·테스트 DB만 사용한다. 로컬·원격 CI 결과와 실제 Google·PostgreSQL 서버 통합 검증은 별도로 기록한다.
+
+## 본인 전용 베타
+
+[Google OAuth 생성·로컬 설정](google-oauth-local-setup.md)을 따른다. `AUTH_ALLOWED_EMAILS` 누락 시 인증이 비활성화된다. 실제 허용 이메일·OAuth 비밀은 무시되는 `.env.local`에만 저장한다.

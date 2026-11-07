@@ -17,7 +17,7 @@ vi.mock("../../src/server/auth/runtime", () => ({ getAuthRuntime: () => ({ auth,
 
 const pg = new PGlite();
 const db = drizzle(pg, { schema });
-const config = { baseUrl: "https://planner.example", databaseUrl: "unused", secret: "synthetic-only-secret-32-characters-long", google: { clientId: "test-google-client", clientSecret: "synthetic-client-secret" } };
+const config = { allowedEmails: ["alice@example.test", "bob@example.test", "new-person@example.test"], baseUrl: "https://planner.example", databaseUrl: "unused", secret: "synthetic-only-secret-32-characters-long", google: { clientId: "test-google-client", clientSecret: "synthetic-client-secret" } };
 const auth = createPlannerAuth(config, drizzleAdapter(db, { provider: "pg", schema, transaction: true }), true);
 const alice = "10000000-0000-4000-8000-000000000001";
 const bob = "10000000-0000-4000-8000-000000000002";
@@ -126,7 +126,7 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
     };
     const info = (idToken: string, nonce: string | undefined = "expected-nonce") => provider.getUserInfo({ idToken, expectedIdTokenNonce: nonce });
     expect((await info(token()))?.data).toMatchObject({ sub: "google-sub-alice" });
-    for (const changes of [{ nonce: "wrong" }, { iss: "https://attacker.test" }, { aud: "other-client" }, { exp: now - 100 }, { email_verified: false }]) {
+    for (const changes of [{ nonce: "wrong" }, { iss: "https://attacker.test" }, { aud: "other-client" }, { exp: now - 100 }, { email_verified: false }, { email: "outsider@example.test" }, { email: "alice+alias@example.test" }]) {
       expect(await info(token(changes))).toBeNull();
     }
     expect(await info(token({}, true))).toBeNull();
@@ -157,6 +157,16 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
     expect((await out(config.baseUrl, "")).status).toBe(204);
     expect(ctx.authCookies.sessionToken).toMatchObject({ name: "__Host-planner-session", attributes: { secure: true, httpOnly: true, sameSite: "lax", path: "/" } });
     expect(ctx.authCookies.sessionToken.attributes.domain).toBeUndefined();
+  });
+  it("rejects an existing session immediately when its owner is removed from the allowlist", async () => {
+    const ctx = await auth.$context;
+    const issued = await ctx.internalAdapter.createSession(bob);
+    const cookie = `__Host-planner-session=${encodeURIComponent(`${issued.token}.${await makeSignature(issued.token, config.secret)}`)}`;
+    config.allowedEmails.splice(config.allowedEmails.indexOf("bob@example.test"), 1);
+    try {
+      expect((await getSession(new Request(`${config.baseUrl}/api/session`, { headers: { cookie } }))).status).toBe(401);
+      expect(await ctx.internalAdapter.findSession(issued.token)).toBeNull();
+    } finally { config.allowedEmails.push("bob@example.test"); }
   });
   it("does not revive idle or absolutely expired sessions", async () => {
     const ctx = await auth.$context;

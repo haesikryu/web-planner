@@ -10,7 +10,12 @@ async function seedSession(context: BrowserContext) {
   const pool = new Pool({ connectionString: process.env.PLANNER_E2E_DATABASE_URL, max: 1 });
   try {
   const id = randomUUID(), token = randomBytes(32).toString("hex"), now = new Date();
-  await pool.query("INSERT INTO users (id,name,email,timezone) VALUES ($1,'',$2,'Asia/Seoul')", [id, `${id}@example.test`]);
+  let inserted = false;
+  for (let index = 0; index < 256; index++) {
+    const result = await pool.query("INSERT INTO users (id,name,email,timezone) VALUES ($1,'',$2,'Asia/Seoul') ON CONFLICT (email) DO NOTHING RETURNING id", [id, `browser-${index}@example.test`]);
+    if (result.rowCount) { inserted = true; break; }
+  }
+  if (!inserted) throw new Error("Disposable browser fixture email pool exhausted; recreate the test database");
   await pool.query("INSERT INTO sessions (id,user_id,token_hash,expires_at,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$5)", [randomUUID(), id, createHash("sha256").update(token).digest("hex"), new Date(now.getTime() + 604800000), now]);
   await context.addCookies([{ name: "planner-session", value: encodeURIComponent(`${token}.${await makeSignature(token, secret)}`), url: "http://127.0.0.1:3101", httpOnly: true, sameSite: "Lax" }]);
   } finally { await pool.end(); }

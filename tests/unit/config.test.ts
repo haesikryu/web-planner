@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ConfigurationError, readAuthConfiguration } from "../../src/server/config";
 
 const valid = {
+  AUTH_ALLOWED_EMAILS: "owner@example.test",
   BETTER_AUTH_URL: "http://localhost:3000",
   DATABASE_URL: "postgresql://synthetic:synthetic@localhost:54329/test",
   BETTER_AUTH_SECRET: "synthetic-test-value-never-use-in-production",
@@ -10,6 +11,12 @@ const valid = {
 };
 
 describe("server authentication configuration boundary", () => {
+  it.each(["", "*", "*@example.test", "owner@example.test,"])("fails closed on missing or invalid private beta allowlist %s", value => {
+    expect(() => readAuthConfiguration({ ...valid, AUTH_ALLOWED_EMAILS: value }, false)).toThrow(ConfigurationError);
+  });
+  it("normalizes explicit email addresses without alias expansion", () => {
+    expect(readAuthConfiguration({ ...valid, AUTH_ALLOWED_EMAILS: " Owner+beta@Example.test,owner+beta@example.test " }, false).allowedEmails).toEqual(["owner+beta@example.test"]);
+  });
   it("allows loopback HTTP only for local development", () => {
     expect(readAuthConfiguration(valid, false).baseUrl).toBe("http://localhost:3000");
     expect(() => readAuthConfiguration(valid, true)).toThrow(ConfigurationError);

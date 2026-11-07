@@ -12,7 +12,7 @@ export const IDLE_SECONDS = 12 * 60 * 60;
 export const ABSOLUTE_SECONDS = 7 * 24 * 60 * 60;
 
 /** Google 1.7.18 does not opt into nonce binding itself. Use the supported provider extension. */
-const googleNonce = (clientId: string): BetterAuthPlugin => ({
+const googleNonce = (clientId: string, allowedEmails: readonly string[]): BetterAuthPlugin => ({
   id: "planner-google-nonce",
   init(context) {
     const provider = context.socialProviders.find(item => item.id === "google");
@@ -30,6 +30,7 @@ const googleNonce = (clientId: string): BetterAuthPlugin => ({
       if (!tokens.idToken || !tokens.expectedIdTokenNonce) return null;
       const claims = await verifyGoogleIdToken({ token: tokens.idToken, audience: clientId, nonce: tokens.expectedIdTokenNonce });
       if (!claims || typeof claims.sub !== "string" || !claims.sub || typeof claims.email !== "string" || claims.email_verified !== true) return null;
+      if (!allowedEmails.includes(claims.email.trim().toLowerCase())) return null;
       return { user: { email: claims.email, emailVerified: true, name: "", image: undefined }, data: claims };
     };
   }
@@ -67,6 +68,6 @@ export function createPlannerAuth(config: AuthConfiguration, database: (options:
     },
     logger: { disabled: true },
     onAPIError: { throw: true, errorURL: `${config.baseUrl}/?auth=error` },
-    plugins: [googleNonce(config.google.clientId)]
+    plugins: [googleNonce(config.google.clientId, config.allowedEmails)]
   });
 }

@@ -7,6 +7,10 @@ export async function resolveSession(headers: Headers) {
   const runtime = getAuthRuntime();
   const identity = await runtime.auth.api.getSession({ headers });
   if (!identity) return null;
+  if (!runtime.config.allowedEmails.includes(identity.user.email.trim().toLowerCase())) {
+    await runtime.db.delete(session).where(eq(session.id, identity.session.id));
+    return null;
+  }
   const now = new Date();
   // Check and touch in one conditional write: idle expiry cannot be revived by competing requests.
   const rows = await runtime.db.update(session).set({ updatedAt: now }).where(and(
