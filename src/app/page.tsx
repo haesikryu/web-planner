@@ -1,4 +1,10 @@
+import { readAuthConfiguration } from "@/server/config";
+import { SignIn } from "./sign-in";
+
+export const dynamic = "force-dynamic";
 export default function Home() {
+  let authReady = false;
+  try { readAuthConfiguration(process.env, process.env.NODE_ENV === "production"); authReady = true; } catch { /* Setup has not completed. */ }
   return (
     <>
       <a className="skip-link" href="#main">본문으로 건너뛰기</a>
@@ -14,13 +20,7 @@ export default function Home() {
           <p className="eyebrow">A LITTLE SPACE FOR WHAT MATTERS</p>
           <h1 id="page-title">나의 하루를,<br /><span>중요한 일부터.</span></h1>
           <p className="lead">해야 할 일 사이에서, 하고 싶은 삶을 잊지 않도록.<br className="desktop-break" /> 계획과 기록, 돌아보는 시간을 한곳에 담으세요.</p>
-          <div className="sign-in">
-            <button type="button" className="google-button" disabled aria-describedby="sign-in-status">
-              <span className="google-letter" aria-hidden="true">G</span>
-              Google로 시작하기
-            </button>
-            <p id="sign-in-status" role="status">로그인은 준비 중입니다.</p>
-          </div>
+          <SignIn enabled={authReady} />
         </section>
         <section className="principles" aria-label="플래너가 지향하는 세 가지 습관">
           <div className="paper-heading"><span>나를 위한 작은 습관</span><span aria-hidden="true">↗</span></div>
