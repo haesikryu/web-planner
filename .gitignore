@@ -7,3 +7,7 @@ node_modules/
 dist/
 coverage/
 *.log
+*.tsbuildinfo
+playwright-report/
+test-results/
+__pycache__/

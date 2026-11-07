@@ -1,0 +1,39 @@
+{
+  "name": "web-planner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.19.0 <25" },
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1",
+    "build": "next build",
+    "start": "next start --hostname 127.0.0.1",
+    "typecheck": "next typegen && tsc --noEmit",
+    "lint": "biome lint src tests next.config.ts vitest.config.ts playwright.config.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "check:spec": "python3 scripts/check_specs.py",
+    "check": "npm run check:spec && npm run lint && npm run typecheck && npm test",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:stop": "docker compose stop postgres"
+  },
+  "dependencies": {
+    "better-auth": "1.7.18",
+    "drizzle-orm": "0.45.4",
+    "next": "16.4.5",
+    "pg": "8.23.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@playwright/test": "1.65.0",
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}
