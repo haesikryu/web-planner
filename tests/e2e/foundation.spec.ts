@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 
 test("foundation page is accessible and does not pretend authentication is ready", async ({ page }) => {
   await page.goto("/");
@@ -38,4 +39,10 @@ test("library bypass routes are unavailable and missing OAuth setup fails safely
   const body = await response.json();
   expect(body.code).toBe("AUTH_UNAVAILABLE");
   expect(JSON.stringify(body)).not.toMatch(/DATABASE_URL|GOOGLE_CLIENT_SECRET|BETTER_AUTH_SECRET|postgresql:/);
+});
+
+test("public landing page meets automated WCAG A/AA checks", async ({ page }) => {
+  await page.goto("/");
+  const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(result.violations).toEqual([]);
 });

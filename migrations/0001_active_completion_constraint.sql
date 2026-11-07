@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "activity_active_completion_unique" ON "task_activities" USING btree ("task_id") WHERE "task_activities"."type" = 'completed' AND "task_activities"."invalidated_by" IS NULL;--> statement-breakpoint
+ALTER TABLE "users" ADD CONSTRAINT "settings_version_positive" CHECK ("users"."settings_version" > 0);

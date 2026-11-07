@@ -19,7 +19,7 @@ export function SignIn({ enabled }: { enabled: boolean }) {
   async function signIn() {
     setBusy(true); setMessage("Google 로그인으로 이동합니다.");
     try {
-      const response = await fetch("/api/auth/sign-in/social", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: "google" }) });
+      const response = await fetch("/api/auth/sign-in/social", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: "google", timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
       if (!response.ok) throw new Error("Sign-in unavailable");
       const url = new URL((await response.json()).url);
       if (url.origin !== "https://accounts.google.com") throw new Error("Invalid login destination");

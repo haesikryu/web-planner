@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import type { BetterAuthOptions, BetterAuthPlugin } from "better-auth";
 import type { DBAdapter } from "better-auth/adapters";
 import { verifyGoogleIdToken } from "better-auth/social-providers";
+import { getOAuthState } from "better-auth/api";
+import { timezone } from "../../domain/rules";
 import type { AuthConfiguration } from "../config";
 import { protectStorage } from "./storage";
 
@@ -51,6 +53,12 @@ export function createPlannerAuth(config: AuthConfiguration, database: (options:
       timezone: { type: "string", required: false, defaultValue: "UTC", input: false },
       settingsVersion: { type: "number", required: false, defaultValue: 1, input: false }
     } },
+    databaseHooks: { user: { create: { before: async data => {
+      const state = await getOAuthState();
+      let initialTimezone = "UTC";
+      try { initialTimezone = timezone(state?.initialTimezone); } catch { /* Invalid or absent device suggestion uses UTC. */ }
+      return { data: { ...data, timezone: initialTimezone } };
+    } } } },
     advanced: {
       database: { generateId: () => randomUUID() },
       useSecureCookies: false,

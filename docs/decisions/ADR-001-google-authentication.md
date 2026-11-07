@@ -24,7 +24,7 @@
 
 ## 근거
 
-현재 구현 증거는 [인증·데이터 검증 기록](../verification/auth-data-foundation.md)에 있다. 신규 가입은 기본 차단이며 D-01과 환경 설정 전에는 열지 않는다. 쿠키 캐시·자동 세션 연장을 끄고 유휴 12시간·절대 7일을 제품 API의 DB 조건으로 검사한다. 현재 기본 시간대는 UTC이며 기기 시간대 제안·설정 변경은 후속 작업이다.
+현재 구현 증거는 [과제 흐름 검증](../verification/planner-core.md)에 있다. 신규 가입은 기본 차단이며 D-01과 환경 설정 전에는 열지 않는다. 쿠키 캐시·자동 세션 연장을 끄고 유휴 12시간·절대 7일을 제품 API의 DB 조건으로 검사한다. 신규 계정만 검증된 기기 시간대 제안을 사용하고 없으면 UTC다. 재로그인 때 변경하지 않으며 명시적 설정 API를 사용한다.
 
 - [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
 - [OpenID Connect Core](https://www.openid.net/specs/openid-connect-core-1_0.html)

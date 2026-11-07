@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, date, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, date, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const instant = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 export const user = pgTable("users", {
@@ -7,7 +7,7 @@ export const user = pgTable("users", {
   emailVerified: boolean("email_verified").notNull().default(false), image: text("image"),
   timezone: text("timezone").notNull().default("UTC"), settingsVersion: integer("settings_version").notNull().default(1),
   createdAt: instant("created_at").notNull().defaultNow(), updatedAt: instant("updated_at").notNull().defaultNow()
-});
+}, t => [check("settings_version_positive", sql`${t.settingsVersion} > 0`)]);
 export const session = pgTable("sessions", {
   id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   token: text("token_hash").notNull().unique(), expiresAt: instant("expires_at").notNull(),
@@ -48,6 +48,7 @@ export const taskActivities = pgTable("task_activities", {
   foreignKey({ columns: [t.invalidatedBy, t.ownerId, t.taskId], foreignColumns: [t.id, t.ownerId, t.taskId] }),
   check("activity_type", sql`${t.type} IN ('completed', 'completion_undone', 'scheduled_date_changed', 'processing_changed')`),
   check("activity_invalidation", sql`${t.invalidatedBy} IS NULL OR (${t.type} = 'completed' AND ${t.invalidatedBy} <> ${t.id})`),
+  uniqueIndex("activity_active_completion_unique").on(t.taskId).where(sql`${t.type} = 'completed' AND ${t.invalidatedBy} IS NULL`),
   index("activity_task_idx").on(t.taskId, t.occurredAt)]);
 export const idempotencyRecords = pgTable("idempotency_records", {
   ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),

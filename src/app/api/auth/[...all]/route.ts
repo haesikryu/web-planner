@@ -1,5 +1,6 @@
 import { getAuthRuntime } from "@/server/auth/runtime";
 import { apiError, validOrigin } from "@/server/auth/security";
+import { timezone } from "@/domain/rules";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,8 +22,10 @@ async function handle(request: Request) {
         return apiError(422, "INVALID_INPUT", "Google 로그인 요청을 확인해주세요.");
       }
       // Fixed callback destinations. Never accept a client-supplied redirect or token.
+      let initialTimezone = "UTC";
+      try { initialTimezone = timezone(body.timezone); } catch { /* A device suggestion is optional. */ }
       request = new Request(request.url, { method: "POST", headers: request.headers,
-        body: JSON.stringify({ provider: "google", callbackURL: "/", errorCallbackURL: "/?auth=error", disableRedirect: true }) });
+        body: JSON.stringify({ provider: "google", callbackURL: "/", errorCallbackURL: "/?auth=error", disableRedirect: true, additionalData: { initialTimezone } }) });
     }
     const result = await auth.handler(request);
     if (result.status >= 500) return apiError(503, "AUTH_UNAVAILABLE", "로그인 연결을 확인할 수 없습니다.");

@@ -1,21 +1,34 @@
 import { readAuthConfiguration } from "@/server/config";
 import { SignIn } from "./sign-in";
+import { headers } from "next/headers";
+import { resolveSession } from "@/server/auth/session";
+import { csrfToken } from "@/server/auth/security";
+import { today } from "@/domain/rules";
+import { Planner, type PlannerSession } from "./planner";
 
 export const dynamic = "force-dynamic";
-export default function Home() {
+export default async function Home() {
   let authReady = false;
-  try { readAuthConfiguration(process.env, process.env.NODE_ENV === "production"); authReady = true; } catch { /* Setup has not completed. */ }
+  let initialSession: PlannerSession | null = null;
+  try {
+    const config = readAuthConfiguration(process.env, process.env.NODE_ENV === "production"); authReady = true;
+    const current = await resolveSession(await headers());
+    if (current) {
+      const timezone = current.user.timezone ?? "UTC";
+      initialSession = { userId: current.user.id, timezone, settingsVersion: current.user.settingsVersion ?? 1, serverDate: today(timezone), csrfToken: csrfToken(current.session.id, config.secret) };
+    }
+  } catch { /* Missing setup or unavailable session leaves private data hidden. */ }
   return (
     <>
       <a className="skip-link" href="#main">본문으로 건너뛰기</a>
       <header className="site-header">
-        <a className="wordmark" href="/" aria-label="Web Planner 홈">
+        <a className="wordmark" href="/" aria-label="w. Web Planner 홈">
           <span className="brand-mark" aria-hidden="true">w.</span>
           <span>Web Planner</span>
         </a>
         <span className="header-note">나의 시간, 나의 방향</span>
       </header>
-      <main id="main" className="landing">
+      {initialSession ? <Planner initialSession={initialSession} /> : <main id="main" className="landing">
         <section className="introduction" aria-labelledby="page-title">
           <p className="eyebrow">A LITTLE SPACE FOR WHAT MATTERS</p>
           <h1 id="page-title">나의 하루를,<br /><span>중요한 일부터.</span></h1>
@@ -29,7 +42,7 @@ export default function Home() {
           <article><span className="step-number">03</span><div><h2>나의 방향 돌아보기</h2><p>지나간 하루에서 다음 주의 힌트를 찾으세요.</p></div></article>
           <p className="paper-footer">조금 덜 바쁘게, 조금 더 나답게.</p>
         </section>
-      </main>
+      </main>}
       <footer className="site-footer"><span>계획하고, 기록하고, 돌아보는 나의 공간.</span><span>Web Planner</span></footer>
     </>
   );

@@ -183,7 +183,7 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ keys: [{ ...publicKey.export({ format: "jwk" }), kid: "callback-key", alg: "RS256" }] })));
     const perform = async (subject: string, email: string) => {
-      const started = await startLogin(new Request(`${config.baseUrl}/api/auth/sign-in/social`, { method: "POST", headers: { origin: config.baseUrl, "content-type": "application/json" }, body: JSON.stringify({ provider: "google", callbackURL: "https://attacker.test" }) }));
+      const started = await startLogin(new Request(`${config.baseUrl}/api/auth/sign-in/social`, { method: "POST", headers: { origin: config.baseUrl, "content-type": "application/json" }, body: JSON.stringify({ provider: "google", timezone: "Asia/Seoul", callbackURL: "https://attacker.test" }) }));
       const url = new URL((await started.json()).url);
       const now = Math.floor(Date.now() / 1000);
       const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "callback-key" })).toString("base64url");
@@ -215,7 +215,8 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
       expect(created.completed.headers.getSetCookie().some(item => item.startsWith("__Host-planner-session="))).toBe(true);
       const users = await db.select().from(schema.user);
       expect(users).toHaveLength(3);
-      expect(users.find(item => item.email === "new-person@example.test")).toMatchObject({ timezone: "UTC", settingsVersion: 1 });
+      expect(users.find(item => item.email === "new-person@example.test")).toMatchObject({ timezone: "Asia/Seoul", settingsVersion: 1 });
+      expect(users.find(item => item.id === alice)?.timezone).toBe("UTC");
     } finally { vi.unstubAllGlobals(); }
   });
   it("restores an isolated database snapshot with schema, migration journal and records", async () => {
