@@ -4,6 +4,8 @@
 !.env.example
 node_modules/
 .next/
+.next-demo-test/
+.next-product-test/
 dist/
 coverage/
 *.log

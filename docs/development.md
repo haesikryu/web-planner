@@ -69,6 +69,10 @@ API 응답은 OpenAPI JSON Schema로 검사하며 `npm run db:prune`은 만료�
 
 ## 본인 전용 베타
 
+Google 로그인을 중지한 상태에서 화면을 체험하려면 `.env.local`에 `AUTH_LOGIN_ENABLED=false`, `LOCAL_DEMO_ENABLED=true`를 설정하고 개발 서버를 실행한다. 홈의 `로그인 없이 테스트하기`로 `/demo`에 들어간다. 입력·수정·실행일·완료·완료 취소·시간대 설정을 같은 플래너 UI에서 확인한다. 테스트 데이터는 전용 sessionStorage 키로 탭에 저장되며 새로고침 후 유지된다. 계정 데이터로 이전하지 않는 임시 자료다. 브라우저의 닫은 탭·세션 복원 기능으로 자료가 복원될 수 있으므로 탭 종료를 삭제 보장으로 안내하지 않는다. 브라우저 저장 불가 시 오류를 표시한다.
+
+이 경로는 개발 모드에서만 열리며 운영 빌드에서는 환경 변수 값과 관계없이 404다. 데모 transport는 네트워크 요청·인증 쿠키 발급·서버 DB 접근을 하지 않는다. 실제 제품 API의 세션·CSRF 검사는 유지한다. `npm run test:e2e:demo`는 OAuth·DB 없이 별도 3102 포트에서 PC·모바일 동작, 저장 유지, 접근성, API 미호출을 검사한다. 별도 개발 빌드 폴더를 사용하여 사용 중인 3000 포트를 방해하지 않는다.
+
 테스트 중 Google 로그인을 잠시 중지하려면 `.env.local`에 `AUTH_LOGIN_ENABLED=false`를 설정한다. 버튼에 일시 중지 안내가 표시되고 로그인 시작·Google 콜백이 503으로 차단된다. 재개하려면 `true`로 바꾸고 서버를 재시작한다. 이 설정은 새 로그인 발급을 제어하며 기존 세션은 세션 만료·로그아웃 정책을 따른다.
 
 [Google OAuth 생성·로컬 설정](google-oauth-local-setup.md)을 따른다. `AUTH_ALLOWED_EMAILS` 누락 시 인증이 비활성화된다. 실제 허용 이메일·OAuth 비밀은 무시되는 `.env.local`에만 저장한다.

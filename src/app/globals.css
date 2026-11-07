@@ -27,6 +27,11 @@ h2 { font-size: 16px; margin: 0 0 10px; letter-spacing: -.4px; font-weight: 600;
 .paper-footer { font-size: 11px; color: var(--muted); text-align: right; margin: 22px 0 0; }
 .site-footer { max-width: 1208px; border-top: 1px solid var(--line); margin: 0 auto; display: flex; justify-content: space-between; padding: 24px 0 32px; font-size: 11px; color: var(--muted); }
 .google-button:not(:disabled) { cursor: pointer; }
+.demo-entry { margin-top: 24px; }
+.demo-button { display: inline-flex; align-items: center; justify-content: center; gap: 18px; min-height: 54px; padding: 14px 24px; border-radius: 9px; background: var(--ink); color: white; font-size: 14px; font-weight: 600; text-decoration: none; }
+.demo-entry-note { font-size: 12px; line-height: 1.8; color: var(--muted); }
+.demo-notice { padding: 18px 22px; margin-bottom: 28px; border: 1px solid #c8d2c9; border-radius: 10px; background: #e8ede5; font-size: 13px; line-height: 1.8; }
+.demo-notice-detail { margin: 4px 0 0; }
 .planner { max-width: 1208px; margin: 16px auto 72px; padding: 0 32px; }
 .planner-heading { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; margin-bottom: 32px; }
 .planner-heading h1 { font-size: 42px; letter-spacing: -2px; }

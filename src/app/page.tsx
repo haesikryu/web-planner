@@ -5,6 +5,7 @@ import { resolveSession } from "@/server/auth/session";
 import { csrfToken } from "@/server/auth/security";
 import { today } from "@/domain/rules";
 import { Planner, type PlannerSession } from "./planner";
+import { isLocalDemoEnabled } from "@/server/demo";
 
 export const dynamic = "force-dynamic";
 export default async function Home() {
@@ -35,6 +36,7 @@ export default async function Home() {
           <h1 id="page-title">나의 하루를,<br /><span>중요한 일부터.</span></h1>
           <p className="lead">해야 할 일 사이에서, 하고 싶은 삶을 잊지 않도록.<br className="desktop-break" /> 계획과 기록, 돌아보는 시간을 한곳에 담으세요.</p>
           <SignIn enabled={authReady && !loginPaused} paused={loginPaused} />
+          {isLocalDemoEnabled(process.env) && <div className="demo-entry"><a className="demo-button" href="/demo">로그인 없이 테스트하기 <span aria-hidden="true">→</span></a><p className="demo-entry-note">할 일 입력·수정·완료를 체험하세요. 내용은 이 탭에만 저장됩니다.</p></div>}
         </section>
         <section className="principles" aria-label="플래너가 지향하는 세 가지 습관">
           <div className="paper-heading"><span>나를 위한 작은 습관</span><span aria-hidden="true">↗</span></div>

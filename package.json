@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "typecheck": "next typegen && tsc --noEmit",
-    "lint": "biome lint src tests next.config.ts vitest.config.ts playwright.config.ts playwright.product.config.ts",
+    "lint": "biome lint src tests next.config.ts vitest.config.ts playwright.config.ts playwright.product.config.ts playwright.demo.config.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
@@ -22,7 +22,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
     "test:e2e:product": "node scripts/prepare-browser-test.mjs && playwright test --config playwright.product.config.ts",
-    "db:prune": "node --env-file-if-exists=.env.local scripts/prune-expired.mjs"
+    "db:prune": "node --env-file-if-exists=.env.local scripts/prune-expired.mjs",
+    "test:e2e:demo": "playwright test --config playwright.demo.config.ts"
   },
   "dependencies": {
     "@js-temporal/polyfill": "0.5.1",

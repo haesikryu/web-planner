@@ -31,6 +31,7 @@ test("anonymous product session returns a private contract error", async ({ requ
 });
 
 test("library bypass routes are unavailable and missing OAuth setup fails safely", async ({ request }) => {
+  expect((await request.get("/demo")).status()).toBe(404);
   expect((await request.get("/api/auth/get-session")).status()).toBe(404);
   const response = await request.post("/api/auth/sign-in/social", {
     headers: { Origin: "http://127.0.0.1:3100" }, data: { provider: "google" }

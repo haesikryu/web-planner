@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  distDir: process.env.PLANNER_TEST_BUILD === "demo" ? ".next-demo-test" : process.env.PLANNER_TEST_BUILD === "product" ? ".next-product-test" : ".next",
   poweredByHeader: false,
   async headers() {
     return [{

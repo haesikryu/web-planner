@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { title as normalizeTitle } from "@/domain/rules";
 
 export type PlannerSession = { userId: string; timezone: string; settingsVersion: number; serverDate: string; csrfToken: string };
+type PlannerRequest = (path: string, init?: RequestInit) => Promise<Response>;
+const serverRequest: PlannerRequest = (path, init) => fetch(path, init);
 type Task = { id: string; title: string; status: "open" | "completed"; scheduledDate: string | null; isUnprocessed: boolean; version: number };
 type View = "inbox" | "scheduled" | "overdue" | "completed";
 type Page = { items: Task[]; nextCursor: string | null };
@@ -27,7 +29,7 @@ function describeChange(body: object): string {
     "isUnprocessed" in body ? (body.isUnprocessed ? "미정리로 표시" : "정리 완료") : ""].filter(Boolean).join(" · ");
 }
 
-export function Planner({ initialSession }: { initialSession: PlannerSession }) {
+export function Planner({ initialSession, request = serverRequest, demo = false }: { initialSession: PlannerSession; request?: PlannerRequest; demo?: boolean }) {
   const [session, setSession] = useState(initialSession), [pages, setPages] = useState(emptyPages);
   const [draft, setDraft] = useState(""), [message, setMessage] = useState("목록을 불러오는 중입니다.");
   const [error, setError] = useState(""), [busy, setBusy] = useState(false), [locked, setLocked] = useState(false);
@@ -39,8 +41,8 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
   const statusEpoch = useRef(0);
 
   const verifySession = useCallback(async (): Promise<PlannerSession> => {
-    const response = await fetch("/api/session", { cache: "no-store" });
-    if (!response.ok) { if (response.status === 401) { setLocked(true); setPages(emptyPages()); } throw new Error("로그인 상태를 확인할 수 없습니다. 입력을 보존했습니다. 다시 시도해주세요."); }
+    const response = await request("/api/session", { cache: "no-store" });
+    if (!response.ok) { if (response.status === 401) { setLocked(true); setPages(emptyPages()); } throw new Error(demo ? "테스트 저장소를 확인할 수 없습니다. 입력을 보존했습니다. 브라우저 저장 설정을 확인하고 다시 시도해주세요." : "로그인 상태를 확인할 수 없습니다. 입력을 보존했습니다. 다시 시도해주세요."); }
     const fresh: PlannerSession = await response.json();
     if (fresh.userId !== currentOwner.current) {
       currentOwner.current = ""; setPages(emptyPages()); setDraft(""); setEditing(null); setPending(null); setConflict(null); setLocked(true);
@@ -49,28 +51,28 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
     const nextCalendar = `${fresh.timezone}|${fresh.serverDate}`;
     if (calendar.current !== nextCalendar) { calendar.current = nextCalendar; setPages(emptyPages()); }
     setLocked(false); setSession(fresh); return fresh;
-  }, []);
+  }, [request, demo]);
   const reload = useCallback(async () => {
     const sequence = ++loadSequence.current;
     const fresh = await verifySession();
     const values = await Promise.all(views.map(async view => {
-      const response = await fetch(listUrl(view.id, fresh), { cache: "no-store" });
+      const response = await request(listUrl(view.id, fresh), { cache: "no-store" });
       if (!response.ok) throw new Error("목록을 불러오지 못했습니다. 새로고침으로 다시 확인해주세요.");
       return [view.id, await response.json()] as const;
     }));
     const confirmed = await verifySession();
     if (confirmed.timezone !== fresh.timezone || confirmed.serverDate !== fresh.serverDate) throw new Error("날짜 기준이 변경되었습니다. 목록을 새로고침해주세요.");
     if (sequence === loadSequence.current && currentOwner.current) setPages(Object.fromEntries(values) as Record<View, Page>);
-  }, [verifySession]);
+  }, [verifySession, request]);
   useEffect(() => {
     const epoch = statusEpoch.current;
-    reload().then(() => { if (epoch === statusEpoch.current) setMessage("서버에 저장된 목록입니다."); })
+    reload().then(() => { if (epoch === statusEpoch.current) setMessage(demo ? "이 탭에 저장된 테스트 목록입니다." : "서버에 저장된 목록입니다."); })
       .catch(cause => { if (epoch === statusEpoch.current) setError(cause.message); });
     const refresh = () => { if (!document.hidden && !operation.current) reload().catch(cause => setError(cause.message)); };
     window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", refresh);
     const timer = window.setInterval(refresh, 60000);
     return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); window.clearInterval(timer); loadSequence.current++; };
-  }, [reload]);
+  }, [reload, demo]);
   useEffect(() => {
     if (!draft && !pending && !editing && zone === session.timezone) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
@@ -84,10 +86,10 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
     let serverConfirmed = false;
     try {
       const fresh = await verifySession();
-      const response = await fetch(value.path, { method: value.method, headers: { "Content-Type": "application/json", "X-CSRF-Token": fresh.csrfToken,
+      const response = await request(value.path, { method: value.method, headers: { "Content-Type": "application/json", "X-CSRF-Token": fresh.csrfToken,
         "Idempotency-Key": value.key, ...(value.version ? { "If-Match": `"v${value.version}"` } : {}) }, body: JSON.stringify(value.body) });
       if (response.status === 412 && value.path.startsWith("/api/tasks/")) {
-        const latest = await fetch(value.path, { cache: "no-store" });
+        const latest = await request(value.path, { cache: "no-store" });
         await verifySession();
         if (latest.ok) { setConflict(await latest.json()); setMessage("수정 충돌 확인 필요"); setError("다른 곳에서 변경한 내용이 있습니다. 최신 내용과 내 변경을 확인해주세요."); return; }
       }
@@ -114,7 +116,7 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
   async function more(view: View) {
     try {
       const cursor = pages[view].nextCursor; if (!cursor) return;
-      const fresh = await verifySession(), response = await fetch(listUrl(view, fresh, cursor), { cache: "no-store" });
+      const fresh = await verifySession(), response = await request(listUrl(view, fresh, cursor), { cache: "no-store" });
       if (!response.ok) throw new Error("목록이 변경되었습니다. 새로고침해주세요.");
       const next: Page = await response.json(), confirmed = await verifySession();
       if (confirmed.timezone !== fresh.timezone || confirmed.serverDate !== fresh.serverDate) throw new Error("날짜 기준이 변경되었습니다. 목록을 새로고침해주세요.");
@@ -122,12 +124,12 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
     } catch (cause) { setError(cause instanceof Error ? cause.message : "목록을 확인해주세요."); }
   }
   async function signOut() {
-    if ((draft || pending || editing || zone !== session.timezone) && !window.confirm("저장하지 않은 입력이 있습니다. 로그아웃하면 입력을 지웁니다. 계속할까요?")) return;
+    if ((draft || pending || editing || zone !== session.timezone) && !window.confirm(demo ? "저장하지 않은 입력이 있습니다. 테스트를 나가면 입력을 지웁니다. 계속할까요?" : "저장하지 않은 입력이 있습니다. 로그아웃하면 입력을 지웁니다. 계속할까요?")) return;
     if (operation.current) return;
     operation.current = true; setBusy(true);
     try {
       const fresh = await verifySession();
-      const result = await fetch("/api/logout", { method: "POST", headers: { "X-CSRF-Token": fresh.csrfToken } });
+      const result = await request("/api/logout", { method: "POST", headers: { "X-CSRF-Token": fresh.csrfToken } });
       if (!result.ok) throw new Error("로그아웃을 확인할 수 없습니다. 다시 시도해주세요.");
       currentOwner.current = ""; setPages(emptyPages()); setDraft(""); setPending(null); setEditing(null); setLocked(true); window.location.replace("/");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "연결을 확인해주세요."); }
@@ -137,8 +139,9 @@ export function Planner({ initialSession }: { initialSession: PlannerSession }) 
   let draftError = "";
   if (draft) { try { normalizeTitle(draft); } catch { draftError = "제목은 공백만 사용할 수 없으며 줄바꿈 없이 1~200자로 입력해주세요."; } }
   return <main id="main" className="planner">
+    {demo && <aside className="demo-notice" aria-label="테스트 모드 안내"><strong>로그인 없는 테스트 모드</strong><p className="demo-notice-detail">입력한 내용은 이 브라우저 탭에만 저장됩니다. 새로고침 후에도 유지되지만 다른 기기와 동기화되지 않는 임시 데이터입니다.</p></aside>}
     <div className="planner-heading"><div><p className="eyebrow">ONE THING AT A TIME</p><h1>오늘을 가볍게.</h1><p className="date-line">{session.serverDate} · {session.timezone}</p></div>
-      <button className="quiet-button" type="button" disabled={busy} onClick={() => void signOut()}>로그아웃 / 계정 바꾸기</button></div>
+      <button className="quiet-button" type="button" disabled={busy} onClick={() => void signOut()}>{demo ? "테스트 나가기" : "로그아웃 / 계정 바꾸기"}</button></div>
     <form className="capture" onSubmit={event => { event.preventDefault(); try { mutate("/api/tasks", "POST", { title: normalizeTitle(draft) }); } catch { setError("제목은 줄바꿈 없이 1~200자로 입력해주세요."); } }}>
       <label htmlFor="capture-title">지금 떠오른 일</label><div className="capture-row"><input id="capture-title" value={draft} disabled={disabled} aria-invalid={Boolean(draftError)} aria-describedby={draftError ? "capture-error" : "capture-help"} onChange={event => setDraft(event.target.value)} placeholder="제목 하나면 충분해요" autoComplete="off" />
         <button type="submit" disabled={disabled || !draft.trim() || Boolean(draftError)}>입력함에 저장</button></div><p id="capture-help" className="field-note">목표와 날짜는 나중에 정해도 괜찮아요.</p>{draftError && <p id="capture-error" role="alert" className="error-note">{draftError}</p>}</form>
