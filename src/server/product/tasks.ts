@@ -1,18 +1,19 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, ne, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lt, ne, or } from "drizzle-orm";
 import { calendarDate, dayRange, InputError, object, title, today, uuidPattern } from "../../domain/rules";
 import { taskKind, taskPriority, taskStatus, type TaskKind, type TaskPriority, type TaskStatus } from "../../domain/task-options";
 import { getAuthRuntime } from "../auth/runtime";
 import { tasks, taskActivities } from "../db/schema";
 import { type Actor, etag, HttpError, type SavedResponse } from "./http";
 import { writeOnce, type Transaction } from "./write";
+import { lockDate } from "./date-lock";
 
 export function taskBody(row: typeof tasks.$inferSelect) {
   const { ownerId: _owner, ...value } = row;
   return { ...value, createdAt: value.createdAt.toISOString(), updatedAt: value.updatedAt.toISOString(), completedAt: value.completedAt?.toISOString() ?? null };
 }
 function normalizedInput(raw: unknown, create: boolean) {
-  const value = object(raw, create ? ["title", "scheduledDate", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind"]);
+  const value = object(raw, create ? ["title", "scheduledDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind"]);
   if ((!create && !Object.keys(value).length) || (create && !("title" in value))) throw new InputError("body");
   const result: { title?: string; scheduledDate?: string | null; status?: TaskStatus; isUnprocessed?: boolean; priority?: TaskPriority; kind?: TaskKind } = {};
   if ("title" in value) result.title = title(value.title);
@@ -25,6 +26,7 @@ function normalizedInput(raw: unknown, create: boolean) {
     result.isUnprocessed = value.isUnprocessed;
   }
   if (create && !("scheduledDate" in result)) result.scheduledDate = null;
+  if (create && result.isUnprocessed === false && !result.scheduledDate) throw new InputError("scheduledDate");
   return result;
 }
 export function taskId(value: string): string {
@@ -41,11 +43,17 @@ async function owned(tx: Transaction, id: string, owner: string, lock = false) {
   if (!row) throw new HttpError(404, "NOT_FOUND", "항목을 찾을 수 없습니다.");
   return row;
 }
+async function requireDayCapacity(tx: Transaction, owner: string, date: string) {
+  await lockDate(tx, "task-day", owner, date);
+  const [result] = await tx.select({ total: count() }).from(tasks).where(and(eq(tasks.ownerId, owner), eq(tasks.scheduledDate, date)));
+  if (result.total >= 5) throw new HttpError(422, "DAILY_TASK_LIMIT", "하루의 할 일은 완료·취소 항목을 포함해 최대 5개까지 등록할 수 있습니다.");
+}
 export async function createTask(actor: Actor, key: string, raw: unknown) {
   const input = normalizedInput(raw, true);
   return compatibleTaskResponse(await writeOnce(actor.id, "POST", "/api/tasks", key, input, async tx => {
+    if (input.scheduledDate) await requireDayCapacity(tx, actor.id, input.scheduledDate);
     const now = new Date();
-    const [row] = await tx.insert(tasks).values({ ownerId: actor.id, title: input.title ?? "", scheduledDate: input.scheduledDate, priority: input.priority, kind: input.kind, createdAt: now, updatedAt: now }).returning();
+    const [row] = await tx.insert(tasks).values({ ownerId: actor.id, title: input.title ?? "", scheduledDate: input.scheduledDate, isUnprocessed: input.isUnprocessed, priority: input.priority, kind: input.kind, createdAt: now, updatedAt: now }).returning();
     return { status: 201, body: taskBody(row), etag: etag(row.version) };
   }));
 }
@@ -63,6 +71,7 @@ export async function patchTask(actor: Actor, id: string, key: string, version: 
     }
     const changed = Object.entries(changes).some(([field, value]) => row[field as keyof typeof changes] !== value);
     if (!changed) return { status: 200, body: taskBody(row), etag: etag(row.version) };
+    if (nextDate !== null && nextDate !== row.scheduledDate) await requireDayCapacity(tx, actor.id, nextDate);
     const now = new Date();
     const [updated] = await tx.update(tasks).set({ ...changes, version: version + 1, updatedAt: now,
       completedAt: nextStatus === row.status ? row.completedAt : nextStatus === "completed" ? now : null
@@ -106,12 +115,13 @@ export async function listTasks(actor: Actor, url: URL) {
   const params = url.searchParams;
   if ([...params.keys()].some(key => !["view", "date", "limit", "cursor"].includes(key) || params.getAll(key).length !== 1)) throw new InputError("query");
   const view = params.get("view") ?? "inbox", date = params.get("date");
-  if (!["inbox", "scheduled", "overdue", "completed"].includes(view) || (view === "inbox" ? date !== null : !date)) throw new InputError("view/date");
+  if (!["inbox", "day", "scheduled", "overdue", "completed"].includes(view) || (view === "inbox" ? date !== null : !date)) throw new InputError("view/date");
   if (date !== null) calendarDate(date);
   const limitText = params.get("limit") ?? "50", limit = Number(limitText);
   if (!/^\d+$/u.test(limitText) || limit < 1 || limit > 100) throw new InputError("limit");
   const filters = [eq(tasks.ownerId, actor.id)];
   if (view === "inbox") filters.push(eq(tasks.isUnprocessed, true));
+  if (view === "day") filters.push(eq(tasks.scheduledDate, date ?? ""));
   if (view === "scheduled") filters.push(ne(tasks.status, "completed"), eq(tasks.scheduledDate, date ?? ""));
   if (view === "overdue") filters.push(inArray(tasks.status, ["open", "deferred"]), lt(tasks.scheduledDate, date ?? ""));
   if (view === "completed") {

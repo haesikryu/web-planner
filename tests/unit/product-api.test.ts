@@ -13,6 +13,7 @@ import { PATCH as settingsRoute } from "../../src/app/api/settings/route";
 import { GET as listTasksRoute, POST as createTaskRoute } from "../../src/app/api/tasks/route";
 import { GET as getTaskRoute, PATCH as patchTaskRoute } from "../../src/app/api/tasks/[taskId]/route";
 import { GET as getJournalRoute, PUT as putJournalRoute } from "../../src/app/api/journal/[date]/route";
+import { GET as getScheduleRoute, PUT as putScheduleRoute } from "../../src/app/api/schedule/[date]/route";
 import { checked } from "../contract";
 import { today } from "../../src/domain/rules";
 
@@ -218,6 +219,112 @@ describe("daily journal API contract, ownership and concurrent writes", () => {
   });
 });
 
+describe("daily schedule API contract and isolation", () => {
+  const date = "2026-11-07", otherDate = "2026-11-08";
+  const context = (value: string) => ({ params: Promise.resolve({ date: value }) });
+  const get = (value = date, options: Parameters<typeof request>[3] = {}) => checked(getScheduleRoute(request(`/api/schedule/${value}`, "GET", undefined, options), context(value)), "/api/schedule/{date}", "get");
+  const put = (body: unknown, options: Parameters<typeof request>[3] = {}, value = date) => checked(putScheduleRoute(request(`/api/schedule/${value}`, "PUT", body, options), context(value)), "/api/schedule/{date}", "put");
+  beforeEach(async () => { await db.delete(schema.scheduleEntries); await db.delete(schema.idempotencyRecords); });
+  it("returns a virtual empty day, normalizes slots and preserves no-op versions before clearing", async () => {
+    const blank = { date, slots: [], version: 0, updatedAt: null };
+    expect(await (await get()).json()).toEqual(blank);
+    expect(await (await put({ slots: [] }, { version: 0 })).json()).toEqual(blank);
+    expect(await db.select().from(schema.scheduleEntries)).toHaveLength(0);
+    const tasksBefore = await db.select().from(schema.tasks), journalBefore = await db.select().from(schema.journalEntries);
+    const key = randomUUID(), input = [{ startMinute: 1410, title: "마지막" }, { startMinute: 360, title: " e\u0301 " }];
+    const first = await (await put({ slots: input }, { key, version: 0 })).json();
+    expect(first).toEqual({ date, slots: [{ startMinute: 360, title: "é" }, { startMinute: 1410, title: "마지막" }], version: 1, updatedAt: expect.any(String) });
+    expect(await (await put({ slots: first.slots }, { key, version: 0 })).json()).toEqual(first);
+    expect(await (await put({ slots: input }, { version: 1 })).json()).toEqual(first);
+    expect(await (await put({ slots: [] }, { version: 1 })).json()).toMatchObject({ slots: [], version: 2 });
+    expect(await (await get()).json()).toMatchObject({ slots: [], version: 2 });
+    expect(await db.select().from(schema.scheduleEntries)).toHaveLength(1);
+    expect(await db.select().from(schema.tasks)).toEqual(tasksBefore);
+    expect(await db.select().from(schema.journalEntries)).toEqual(journalBefore);
+  });
+  it("isolates owners and dates and requires auth, origin, CSRF and canonical versions", async () => {
+    const key = randomUUID(), slots = [{ startMinute: 360, title: "private" }];
+    expect((await put({ slots }, { key, version: 0 })).status).toBe(200);
+    expect(await (await get(date, { actor: bob })).json()).toMatchObject({ slots: [], version: 0 });
+    expect((await put({ slots: [{ startMinute: 390, title: "bob" }] }, { key, actor: bob, version: 0 })).status).toBe(200);
+    expect((await put({ slots }, { key, version: 0 }, otherDate)).status).toBe(200);
+    expect(await (await get()).json()).toMatchObject({ slots, version: 1 });
+    expect((await get(date, { actor: "anonymous" })).status).toBe(401);
+    expect((await put({ slots }, { actor: "anonymous", version: 1 })).status).toBe(401);
+    expect((await put({ slots }, { version: 1, csrf: "bad" })).status).toBe(403);
+    expect((await put({ slots }, { version: 1, origin: "https://other.example" })).status).toBe(403);
+    expect((await put({ slots })).status).toBe(428);
+    const invalid = request(`/api/schedule/${date}`, "PUT", { slots }, { version: 1 }); invalid.headers.set("if-match", '"v00"');
+    expect((await checked(putScheduleRoute(invalid, context(date)), "/api/schedule/{date}", "put")).status).toBe(422);
+  });
+  it("rejects invalid dates and slot documents without consuming keys", async () => {
+    const key = randomUUID();
+    for (const body of [{}, { slots: null }, { slots: {} }, { slots: [], ownerId: bob }, { slots: [{ startMinute: 360, title: " " }] }, { slots: [{ startMinute: 360, title: "line\nbreak" }] }, { slots: [{ startMinute: 1440, title: "late" }] }, { slots: [{ startMinute: 361, title: "offset" }] }, { slots: [{ startMinute: 360, title: "one" }, { startMinute: 360, title: "duplicate" }] }]) {
+      expect((await put(body, { key, version: 0 })).status).toBe(422);
+    }
+    for (const invalidDate of ["0000-01-01", "2026-02-30", "2026-1-01"]) {
+      expect((await get(invalidDate)).status).toBe(422);
+      expect((await put({ slots: [] }, { key, version: 0 }, invalidDate)).status).toBe(422);
+    }
+    expect(await db.select().from(schema.scheduleEntries)).toHaveLength(0);
+    expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(0);
+    const slots = Array.from({ length: 36 }, (_, i) => ({ startMinute: 360 + i * 30, title: "😀".repeat(200) }));
+    expect(await (await put({ slots }, { key, version: 0 })).json()).toMatchObject({ slots, version: 1 });
+  });
+  it("replays before stale version checks and expires keys after 24 hours", async () => {
+    const key = randomUUID(), slots = [{ startMinute: 360, title: "first" }];
+    const first = await (await put({ slots }, { key, version: 0 })).json();
+    expect((await put({ slots: [] }, { key, version: 0 })).status).toBe(409);
+    expect((await put({ slots }, { key, version: 1 })).status).toBe(409);
+    expect((await put({ slots: [] }, { version: 0 })).status).toBe(412);
+    expect((await put({ slots: [] }, { version: 1 })).status).toBe(200);
+    expect(await (await put({ slots }, { key, version: 0 })).json()).toEqual(first);
+    await db.update(schema.idempotencyRecords).set({ expiresAt: new Date(Date.now() - 1) }).where(eq(schema.idempotencyRecords.key, key));
+    expect((await put({ slots }, { key, version: 0 })).status).toBe(412);
+    expect(await (await put({ slots }, { key, version: 2 })).json()).toMatchObject({ version: 3 });
+  });
+  it("serializes first writes and concurrent changes and replays duplicate requests", async () => {
+    const a = [{ startMinute: 360, title: "A" }], b = [{ startMinute: 390, title: "B" }];
+    const first = await Promise.all([put({ slots: a }, { version: 0 }), put({ slots: b }, { version: 0 })]);
+    expect(first.map(item => item.status).sort()).toEqual([200, 412]);
+    const changed = await Promise.all([put({ slots: [{ startMinute: 420, title: "C" }] }, { version: 1 }), put({ slots: [{ startMinute: 450, title: "D" }] }, { version: 1 })]);
+    expect(changed.map(item => item.status).sort()).toEqual([200, 412]);
+    const key = randomUUID();
+    const duplicate = await Promise.all([put({ slots: a }, { key, version: 2 }), put({ slots: a }, { key, version: 2 })]);
+    expect(duplicate.some(item => item.status === 200)).toBe(true);
+    for (const item of duplicate) expect([200, 409]).toContain(item.status);
+    expect(await (await put({ slots: a }, { key, version: 2 })).json()).toMatchObject({ slots: a, version: 3 });
+    expect(await db.select().from(schema.scheduleEntries)).toHaveLength(1);
+  });
+  it("rolls back schedule and key together when response persistence fails", async () => {
+    await db.execute(sql`CREATE FUNCTION reject_schedule_response() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-schedule-fault'; END $$`);
+    await db.execute(sql`CREATE TRIGGER schedule_response_failure BEFORE UPDATE ON idempotency_records FOR EACH ROW EXECUTE FUNCTION reject_schedule_response()`);
+    const key = randomUUID(), slots = [{ startMinute: 360, title: "rollback" }];
+    try {
+      const failed = await put({ slots }, { key, version: 0 });
+      expect(failed.status).toBe(500); expect(JSON.stringify(await failed.json())).not.toContain("synthetic-schedule-fault");
+      expect(await db.select().from(schema.scheduleEntries)).toHaveLength(0);
+      expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(0);
+    } finally {
+      await db.execute(sql`DROP TRIGGER schedule_response_failure ON idempotency_records`);
+      await db.execute(sql`DROP FUNCTION reject_schedule_response()`);
+    }
+    expect((await put({ slots }, { key, version: 0 })).status).toBe(200);
+  });
+  it.skipIf(!pool)("returns a retryable response while another connection holds the schedule lock", async () => {
+    const client = await (pool as Pool).connect(), key = randomUUID();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [JSON.stringify(["schedule", alice, date])]);
+      const response = await put({ slots: [{ startMinute: 360, title: "wait" }] }, { key, version: 0 });
+      expect(response.status).toBe(409); expect(response.headers.get("retry-after")).toBe("1");
+      expect(await db.select().from(schema.scheduleEntries)).toHaveLength(0);
+      expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(0);
+    } finally { await client.query("ROLLBACK"); client.release(); }
+    expect((await put({ slots: [{ startMinute: 360, title: "wait" }] }, { key, version: 0 })).status).toBe(200);
+  });
+});
+
 describe("task API ownership, atomic changes and pagination", () => {
   beforeEach(async () => {
     await db.delete(schema.taskActivities); await db.delete(schema.tasks); await db.delete(schema.idempotencyRecords);
@@ -237,6 +344,62 @@ describe("task API ownership, atomic changes and pagination", () => {
     expect((await create({ title: "changed" }, { key })).status).toBe(409);
     expect(await db.select().from(schema.tasks)).toHaveLength(1);
     expect((await create({ title: "other owner" }, { key, actor: bob })).status).toBe(201);
+  });
+  it("allows processed creation only with a date and counts completed and canceled tasks in day view", async () => {
+    const date = "2026-11-07";
+    expect((await create({ title: "hidden", isUnprocessed: false })).status).toBe(422);
+    expect((await create({ title: "hidden", scheduledDate: null, isUnprocessed: false })).status).toBe(422);
+    expect((await create({ title: "invalid", scheduledDate: date, isUnprocessed: "false" })).status).toBe(422);
+    const items = [];
+    for (let i = 0; i < 5; i++) items.push(await (await create({ title: `day ${i}`, scheduledDate: date, isUnprocessed: false })).json());
+    expect(items[0]).toMatchObject({ scheduledDate: date, isUnprocessed: false });
+    expect((await patch(items[0].id, { status: "completed" }, { version: 1 })).status).toBe(200);
+    expect((await patch(items[1].id, { status: "canceled" }, { version: 1 })).status).toBe(200);
+    const day = await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json();
+    expect(day.items).toHaveLength(5);
+    expect(day.items.map((item: { status: string }) => item.status)).toEqual(expect.arrayContaining(["completed", "canceled"]));
+    const scheduled = await (await listTasks(request(`/api/tasks?view=scheduled&date=${date}`, "GET"))).json();
+    expect(scheduled.items).toHaveLength(4);
+    const key = randomUUID(), limited = await create({ title: "sixth", scheduledDate: date }, { key });
+    expect(limited.status).toBe(422); expect(await limited.json()).toMatchObject({ code: "DAILY_TASK_LIMIT" });
+    expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
+    expect((await create({ title: "other owner", scheduledDate: date, isUnprocessed: false }, { actor: bob })).status).toBe(201);
+    expect((await listTasks(request("/api/tasks?view=day", "GET"))).status).toBe(422);
+  });
+  it("preserves legacy over-limit days while allowing same-day edits and moves out", async () => {
+    const date = "2026-11-07";
+    const legacy = await db.insert(schema.tasks).values(Array.from({ length: 6 }, (_, i) => ({ ownerId: alice, title: `legacy ${i}`, scheduledDate: date, isUnprocessed: false }))).returning();
+    expect((await patch(legacy[0].id, { title: "edited", scheduledDate: date }, { version: 1 })).status).toBe(200);
+    expect((await patch(legacy[1].id, { status: "completed" }, { version: 1 })).status).toBe(200);
+    const incoming = await (await create({ title: "inbox" })).json();
+    const denied = await patch(incoming.id, { scheduledDate: date, isUnprocessed: false }, { version: 1 });
+    expect(denied.status).toBe(422); expect(await denied.json()).toMatchObject({ code: "DAILY_TASK_LIMIT" });
+    expect((await db.select().from(schema.tasks).where(eq(schema.tasks.id, incoming.id)))[0]).toMatchObject({ version: 1, scheduledDate: null, isUnprocessed: true });
+    expect((await patch(legacy[2].id, { scheduledDate: "2026-11-08" }, { version: 1 })).status).toBe(200);
+    expect((await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json()).items).toHaveLength(5);
+  });
+  it("replays a successful fifth task without applying the daily limit again", async () => {
+    const date = "2026-11-07", key = randomUUID();
+    for (let i = 0; i < 4; i++) await create({ title: `existing ${i}`, scheduledDate: date });
+    const input = { title: "fifth", scheduledDate: date, isUnprocessed: false };
+    const first = await (await create(input, { key })).json();
+    expect(await (await create(input, { key })).json()).toEqual(first);
+    expect(await db.select().from(schema.tasks)).toHaveLength(5);
+  });
+  it("serializes simultaneous creates, moves and mixed arrivals into the fifth place", async () => {
+    for (const mode of ["create", "move", "mixed"]) {
+      await db.delete(schema.taskActivities); await db.delete(schema.tasks); await db.delete(schema.idempotencyRecords);
+      const date = "2026-11-07";
+      for (let i = 0; i < 4; i++) await create({ title: `existing ${i}`, scheduledDate: date });
+      const a = await (await create({ title: "incoming A" })).json(), b = await (await create({ title: "incoming B" })).json();
+      const createIncoming = () => create({ title: "new", scheduledDate: date, isUnprocessed: false });
+      const move = (id: string) => patch(id, { scheduledDate: date, isUnprocessed: false }, { version: 1 });
+      const responses = await Promise.all(mode === "create" ? [createIncoming(), createIncoming()] : mode === "move" ? [move(a.id), move(b.id)] : [createIncoming(), move(a.id)]);
+      expect(responses.filter(response => response.status === 200 || response.status === 201)).toHaveLength(1);
+      const denied = responses.find(response => response.status === 422);
+      expect(denied).toBeDefined(); expect(await denied?.json()).toMatchObject({ code: "DAILY_TASK_LIMIT" });
+      expect((await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json()).items).toHaveLength(5);
+    }
   });
   it("keeps anonymous and other-owner reads/updates private without consuming keys", async () => {
     const task = await (await create({ title: "private" })).json();

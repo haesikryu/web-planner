@@ -107,6 +107,7 @@ body:has(.diary-app) .site-footer { max-width: 1408px; }
 .journal-recovery button { margin: 6px 6px 0 0; }
 .journal-recovery pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
 .capture { padding: 16px; margin-bottom: 30px; background: #f0f2e8; border: 1px solid #dbe2cf; border-radius: 4px; }
+.daily-capture { padding: 12px; margin: 14px 0 4px; }
 .capture label { font-size: 12px; font-weight: 600; display: block; margin-bottom: 10px; }
 .capture-row { display: flex; flex-direction: column; gap: 8px; }
 .capture-row button { background: #3b513e; color: white; border-color: #3b513e; align-self: flex-end; }
@@ -160,6 +161,32 @@ body:has(.diary-app) .site-footer { max-width: 1408px; }
 .timezone-panel summary { cursor: pointer; padding: 8px 0; }
 .timezone-panel input { display: block; max-width: 340px; margin: 10px 0; }
 .timezone-help { line-height: 1.8; }
+.daily-tasks .task-card { padding: 12px 0; }
+.daily-tasks .task-meta { display: none; }
+.daily-tasks .task-controls { margin: 6px 0 8px 20px; gap: 8px; }
+.daily-tasks .task-title { font-size: 13px; }
+.daily-tasks .empty-state { min-height: 64px; }
+.schedule-section { margin: 0 0 26px; scroll-margin-top: 24px; }
+.schedule-range { font: 11px Georgia, serif; color: #52614c; white-space: nowrap; }
+.schedule-grid { min-width: 0; padding: 0; margin-left: 0; margin-right: 0; max-height: 540px; overflow-y: auto; overscroll-behavior-y: contain; margin-top: 14px; border: 1px solid #cdd6c4; border-radius: 4px; scrollbar-color: #a4b299 #f0f2e8; scrollbar-width: thin; }
+.schedule-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: stretch; min-height: 48px; border-bottom: 1px solid #d7dfce; }
+.schedule-row.half-hour { border-bottom-color: #bdcbb2; }
+.schedule-row > label { display: flex; flex-direction: column; justify-content: center; gap: 3px; padding: 6px 10px; background: #eef1e5; color: #42563e; font: 12px Georgia, serif; }
+.schedule-until { color: #59664f; font-size: 10px; }
+.planner .schedule-row input { border: 0; border-radius: 0; background: transparent; padding: 10px 12px; font-size: 14px; }
+.planner .schedule-row input:focus { position: relative; outline-offset: -3px; }
+.schedule-row:focus-within { background: #f0f5e9; }
+.schedule-row input:disabled { opacity: .65; }
+.schedule-row input::placeholder { color: #65745c; }
+.schedule-end { padding: 10px; color: #52614c; font: 12px Georgia, serif; background: #eef1e5; }
+.schedule-end-caption { margin-left: 12px; font: 10px Arial, sans-serif; }
+.schedule-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; }
+.schedule-count, .schedule-save-status { color: #52614c; font-size: 11px; line-height: 1.8; }
+.schedule-actions button { background: #3b513e; border-color: #3b513e; color: white; }
+.schedule-actions button:hover:not(:disabled) { background: #29402e; }
+.archive-tasks { border-top: 1px dashed #bdcbb2; padding-top: 14px; }
+.archive-tasks > summary { cursor: pointer; font-size: 12px; color: #52614c; padding: 8px 0; }
+.archive-tasks[open] > summary { margin-bottom: 22px; }
 @media (max-width: 1100px) {
   .diary-shell { grid-template-columns: 1fr; gap: 18px; }
   .diary-sidebar { display: none; }

@@ -48,15 +48,15 @@ for path, methods in CONTRACT['paths'].items():
             check('#/components/parameters/CSRF' in params, 'Missing CSRF: ' + path)
             check('#/components/parameters/IdempotencyKey' in params, 'Missing key: ' + path)
         if method in ('patch', 'put'):
-            version_parameter = 'JournalIfMatch' if path == '/api/journal/{date}' else 'IfMatch'
+            version_parameter = {'/api/journal/{date}': 'JournalIfMatch', '/api/schedule/{date}': 'ScheduleIfMatch'}.get(path, 'IfMatch')
             check('#/components/parameters/' + version_parameter in params, 'Missing If-Match: ' + path)
             check('412' in operation['responses'] and '428' in operation['responses'],
                   'Missing version errors: ' + path)
-        if path == '/api/journal/{date}' and method == 'put':
+        if path in ('/api/journal/{date}', '/api/schedule/{date}') and method == 'put':
             check('#/components/parameters/Origin' in params, 'Missing Origin: ' + path)
-            pattern = CONTRACT['components']['parameters']['JournalIfMatch']['schema']['pattern']
+            pattern = CONTRACT['components']['parameters'][version_parameter]['schema']['pattern']
             check(bool(re.fullmatch(pattern, '"v0"')) and not re.fullmatch(pattern, '"v00"'),
-                  'Journal If-Match must allow only canonical zero version')
+                  'Day document If-Match must allow only canonical zero version: ' + path)
 check(len(operations) == len(set(operations)), 'Duplicate operationId')
 
 feature = (ROOT / 'specs/001-capture-complete/acceptance.feature').read_text()

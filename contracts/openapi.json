@@ -2,8 +2,8 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Web Planner FEAT-001 API",
-    "version": "0.6.0",
-    "description": "FEAT-001 실행 계약. 인증·설정·과제와 날짜별 자유글 API를 제공한다. 실제 Google 공급자 검증과 배포 상태는 별도 검증 기록을 따른다."
+    "version": "0.7.0",
+    "description": "FEAT-001 실행 계약. 인증·설정·날짜별 최대 5개 할 일·30분 일정·자유글 API를 제공한다. 실제 공급자·배포 상태는 별도 검증 기록을 따른다."
   },
   "security": [
     {
@@ -178,7 +178,7 @@
       "get": {
         "operationId": "listTasks",
         "summary": "현재 사용자의 과제 목록",
-        "description": "view=inbox는 상태와 관계없이 isUnprocessed=true. scheduled는 completed를 제외한 상태이며 실행일=date로 취소 표시도 유지한다. overdue는 open/deferred이며 실행일<date. completed는 현재 유효 완료 시각이 계정 시간대의 date에 속함. inbox에서는 date를 생략하고 다른 view에서는 필수로 지정한다. 잘못된 조합은 422. 정렬은 생성 시각 오름차순·ID, completed는 완료 시각 내림차순·ID. 페이지는 스냅샷이 아니므로 변경 후 재조회한다.",
+        "description": "view=inbox는 상태와 관계없이 isUnprocessed=true. day는 실행일=date인 모든 상태(완료·취소 포함). scheduled는 completed를 제외한 상태이며 실행일=date로 취소 표시도 유지한다. overdue는 open/deferred이며 실행일<date. completed는 현재 유효 완료 시각이 계정 시간대의 date에 속함. inbox에서는 date를 생략하고 다른 view에서는 필수로 지정한다. 잘못된 조합은 422. 정렬은 생성 시각 오름차순·ID, completed는 완료 시각 내림차순·ID. 페이지는 스냅샷이 아니므로 변경 후 재조회한다.",
         "parameters": [
           {
             "name": "view",
@@ -187,6 +187,7 @@
               "type": "string",
               "enum": [
                 "inbox",
+                "day",
                 "scheduled",
                 "overdue",
                 "completed"
@@ -261,7 +262,7 @@
       "post": {
         "operationId": "createTask",
         "summary": "미완료·미정리 과제 생성",
-        "description": "owner는 세션에서 가져온다. 상태는 open, isUnprocessed=true, version=1. 최초와 재생 응답은 모두 같은 201·본문·ETag.",
+        "description": "owner는 세션에서 가져온다. 상태는 open, version=1. isUnprocessed는 생략하면 true이며 false는 실행일이 필수다. 실행일을 지정한 신규 과제는 해당 사용자·날짜의 전체 상태 과제가 5개 미만일 때만 추가한다. 완료·취소도 한도에 포함하며 초과하면 422 DAILY_TASK_LIMIT이다. 최초와 재생 응답은 모두 같은 201·본문·ETag이며 재생에는 한도를 재검사하지 않는다.",
         "parameters": [
           {
             "$ref": "#/components/parameters/CSRF"
@@ -316,7 +317,22 @@
             "$ref": "#/components/responses/409"
           },
           "422": {
-            "$ref": "#/components/responses/422"
+            "description": "INVALID_INPUT 또는 DAILY_TASK_LIMIT. 사용자·실행일의 완료·취소 포함 전체 과제가 이미 5개이면 신규 생성·이동을 거절하고 기존 자료는 유지한다.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
           },
           "429": {
             "$ref": "#/components/responses/429"
@@ -382,7 +398,7 @@
       "patch": {
         "operationId": "patchTask",
         "summary": "제목·실행일·정리 상태·완료 변경",
-        "description": "상태 open/completed/deferred/canceled와 우선순위 high/medium/low, 유형 task/appointment/event를 변경한다. completed에서 어떤 다른 상태로 이동해도 완료 시각과 이전 유효 완료 활동을 무효화한다. 미룸은 상태 표시만 바꾸며 날짜 이동은 scheduledDate를 명시한다. 속성 생략은 유지, scheduledDate=null은 날짜 해제. 날짜 변경은 마감일에 영향 없음. 동일 값 변경은 새 버전·활동 없음. 같은 키 재생은 버전 검사 전 처리하며 사용자 소유권은 먼저 확인한다. 변경 결과가 날짜 없는 비완료 항목이면 입력함 접근을 유지하도록 isUnprocessed=true를 보충한다. 이 조건에서 명시적인 isUnprocessed=false는 422이며, 서버 보충값은 원래 요청의 재생 해시에 포함하지 않는다.",
+        "description": "상태 open/completed/deferred/canceled와 우선순위 high/medium/low, 유형 task/appointment/event를 변경한다. completed에서 어떤 다른 상태로 이동해도 완료 시각과 이전 유효 완료 활동을 무효화한다. 미룸은 상태 표시만 바꾸며 날짜 이동은 scheduledDate를 명시한다. 속성 생략은 유지, scheduledDate=null은 날짜 해제. 날짜 변경은 마감일에 영향 없음. 동일 값 변경은 새 버전·활동 없음. 같은 키 재생은 버전 검사 전 처리하며 사용자 소유권은 먼저 확인한다. 변경 결과가 날짜 없는 비완료 항목이면 입력함 접근을 유지하도록 isUnprocessed=true를 보충한다. 이 조건에서 명시적인 isUnprocessed=false는 422이며, 서버 보충값은 원래 요청의 재생 해시에 포함하지 않는다. 다른 실행일로 이동할 때 목적 날짜의 완료·취소 포함 전체 과제가 5개 이상이면 422 DAILY_TASK_LIMIT이다. 기존 5개 초과 자료는 보존하며 같은 실행일의 제목·상태·우선순위 수정은 허용한다. 생성과 날짜 이동은 목적 날짜별 잠금으로 직렬화한다.",
         "parameters": [
           {
             "$ref": "#/components/parameters/TaskId"
@@ -449,7 +465,22 @@
             "$ref": "#/components/responses/412"
           },
           "422": {
-            "$ref": "#/components/responses/422"
+            "description": "INVALID_INPUT 또는 DAILY_TASK_LIMIT. 사용자·실행일의 완료·취소 포함 전체 과제가 이미 5개이면 신규 생성·이동을 거절하고 기존 자료는 유지한다.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
           },
           "428": {
             "$ref": "#/components/responses/428"
@@ -590,6 +621,134 @@
           }
         }
       }
+    },
+    "/api/schedule/{date}": {
+      "get": {
+        "operationId": "getSchedule",
+        "summary": "선택 날짜의 30분 일정 조회",
+        "description": "세션 owner와 달력 날짜로 조회한다. 없으면 행을 생성하지 않고 {date,slots:[],version:0,updatedAt:null}을 반환한다. 저장된 슬롯은 시작 시간순이며 다른 사용자 자료는 노출하지 않는다.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ScheduleDate"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "선택 날짜의 개인 일정. 빈 날짜도 200과 ETag \"v0\"로 응답한다.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleEntry"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "version 0을 허용하는 단일 strong ETag.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"v(?:0|[1-9][0-9]*)\"$"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        }
+      },
+      "put": {
+        "operationId": "putSchedule",
+        "summary": "선택 날짜의 30분 일정 저장",
+        "description": "06:00~24:00의 36개 30분 칸 중 내용이 있는 칸만 저장한다. startMinute는 360~1410의 30배수 정수이며 중복 불가다. 제목은 과제 제목과 같은 정규화·1~200 코드 포인트 규칙을 따른다. 요청 JSON은 65536바이트까지, 알 수 없는 필드·빈 제목은 422다. 정규화·정렬한 slots와 If-Match로 재생을 판정한다. 같은 본문은 버전·시각을 유지하고 처음 빈 배열을 저장하면 v0 no-op이다. 기존 일정을 비우면 행을 유지하고 버전을 증가시킨다. 키는 24시간 재생되며 재생은 버전 검사 전 수행한다. 오래된 버전은 412, 키 내용 충돌과 잠금 대기 초과는 409다. 첫 저장도 owner·날짜별 잠금으로 직렬화하며 과제·자유글은 변경하지 않는다.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ScheduleDate"
+          },
+          {
+            "$ref": "#/components/parameters/Origin"
+          },
+          {
+            "$ref": "#/components/parameters/CSRF"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/ScheduleIfMatch"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutSchedule"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "선택 날짜의 개인 일정. 빈 날짜도 200과 ETag \"v0\"로 응답한다.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleEntry"
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "description": "version 0을 허용하는 단일 strong ETag.",
+                "schema": {
+                  "type": "string",
+                  "pattern": "^\"v(?:0|[1-9][0-9]*)\"$"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/401"
+          },
+          "403": {
+            "$ref": "#/components/responses/403"
+          },
+          "409": {
+            "$ref": "#/components/responses/409"
+          },
+          "412": {
+            "$ref": "#/components/responses/412"
+          },
+          "422": {
+            "$ref": "#/components/responses/422"
+          },
+          "428": {
+            "$ref": "#/components/responses/428"
+          },
+          "500": {
+            "$ref": "#/components/responses/500"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -670,6 +829,27 @@
           "format": "uri"
         },
         "description": "설정된 서비스 origin과 일치해야 한다. 누락하거나 다르면 403."
+      },
+      "ScheduleDate": {
+        "name": "date",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "format": "date",
+          "pattern": "^(?!0000)\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "description": "시간대 변환 없는 0001-01-01~9999-12-31의 실제 달력 날짜. 잘못된 날짜는 422."
+      },
+      "ScheduleIfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "pattern": "^\"v(?:0|[1-9][0-9]*)\"$"
+        },
+        "description": "날짜별 일정의 단일 strong ETag. 아직 저장한 일정이 없으면 \"v0\", 저장된 일정은 \"vN\". 버전은 0~2147483646. 누락 428, 형식 오류 422, 버전 불일치 412."
       }
     },
     "schemas": {
@@ -806,10 +986,39 @@
             ],
             "description": "기호 유형: 할 일(□), 약속(△), 행사(○). 생략한 신규 과제는 task.",
             "default": "task"
+          },
+          "isUnprocessed": {
+            "type": "boolean",
+            "default": true,
+            "description": "기본 true를 유지한다. false 지정은 scheduledDate가 있는 경우만 허용한다."
           }
         },
         "required": [
           "title"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "isUnprocessed"
+              ],
+              "properties": {
+                "isUnprocessed": {
+                  "const": false
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "scheduledDate"
+              ],
+              "properties": {
+                "scheduledDate": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         ]
       },
       "PatchTask": {
@@ -1058,6 +1267,135 @@
         },
         "required": [
           "content"
+        ]
+      },
+      "ScheduleSlot": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "startMinute": {
+            "type": "integer",
+            "minimum": 360,
+            "maximum": 1410,
+            "multipleOf": 30,
+            "description": "06:00~23:30의 30분 칸 시작. 마지막 칸은 24:00에 끝난다."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "NFC 정규화·앞뒤 공백 제거 후 1~200 Unicode 코드 포인트. CR·LF·NUL 금지."
+          }
+        },
+        "required": [
+          "startMinute",
+          "title"
+        ]
+      },
+      "PutScheduleSlot": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "startMinute": {
+            "type": "integer",
+            "minimum": 360,
+            "maximum": 1410,
+            "multipleOf": 30,
+            "description": "06:00~23:30의 30분 칸 시작. 마지막 칸은 24:00에 끝난다."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "description": "NFC 정규화·앞뒤 공백 제거 후 1~200 Unicode 코드 포인트. CR·LF·NUL 금지. 입력 원문 길이 대신 정규화 이후 길이를 검사한다. 빈 칸은 slots 배열에서 제외한다."
+          }
+        },
+        "required": [
+          "startMinute",
+          "title"
+        ]
+      },
+      "ScheduleEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?!0000)\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "updatedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "slots": {
+            "type": "array",
+            "maxItems": 36,
+            "items": {
+              "$ref": "#/components/schemas/ScheduleSlot"
+            },
+            "description": "startMinute 오름차순. 같은 시작 시간은 한 번만 허용한다."
+          }
+        },
+        "required": [
+          "date",
+          "slots",
+          "version",
+          "updatedAt"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "version": {
+                  "const": 0
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "slots": {
+                  "maxItems": 0
+                },
+                "updatedAt": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "updatedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          }
+        ],
+        "description": "선택 날짜의 일정 문서. 없으면 slots=[],version=0,updatedAt=null. owner를 응답하지 않는다."
+      },
+      "PutSchedule": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "slots": {
+            "type": "array",
+            "maxItems": 36,
+            "items": {
+              "$ref": "#/components/schemas/PutScheduleSlot"
+            },
+            "description": "빈 배열은 전체 일정 비우기. 중복 시작 시간은 422, 입력 순서는 서버가 정렬한다. 빈 제목 칸은 요청에서 제외한다."
+          }
+        },
+        "required": [
+          "slots"
         ]
       }
     },

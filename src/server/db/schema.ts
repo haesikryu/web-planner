@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { boolean, check, date, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import type { ScheduleSlot } from "../../domain/schedule";
 
 const instant = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 export const user = pgTable("users", {
@@ -61,6 +62,14 @@ export const journalEntries = pgTable("journal_entries", {
   check("journal_content", sql`char_length(${t.content}) <= 10000 AND ${t.content} !~ E'\\r\\n'`),
   check("journal_version", sql`${t.version} > 0`),
   check("journal_date", sql`${t.date} BETWEEN DATE '0001-01-01' AND DATE '9999-12-31'`)]);
+export const scheduleEntries = pgTable("schedule_entries", {
+  ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  date: date("entry_date").notNull(), slots: jsonb("slots").$type<ScheduleSlot[]>().notNull(),
+  version: integer("version").notNull().default(1), updatedAt: instant("updated_at").notNull().defaultNow()
+}, t => [primaryKey({ columns: [t.ownerId, t.date] }),
+  check("schedule_slots", sql`public.planner_valid_schedule_slots(${t.slots})`),
+  check("schedule_version", sql`${t.version} > 0`),
+  check("schedule_date", sql`${t.date} BETWEEN DATE '0001-01-01' AND DATE '9999-12-31'`)]);
 export const idempotencyRecords = pgTable("idempotency_records", {
   ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   method: text("method").notNull(), path: text("path").notNull(), key: text("key").notNull(),

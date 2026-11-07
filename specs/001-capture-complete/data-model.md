@@ -11,13 +11,28 @@
 | tasks | id, owner_id, title, priority, kind, status, scheduled_date, due_date, is_unprocessed, completed_at, version, created_at, updated_at | owner 필수, title 규칙, version 양수 |
 | task_activities | id, owner_id, task_id, type, occurred_at, invalidated_by | 완료·완료취소·미룸·취소·복원·실행일·정리·우선순위·유형 변경 기록 |
 | journal_entries | owner_id, entry_date, content, version, updated_at | owner·entry_date 복합 기본키, 0~10,000 코드 포인트, 양수 저장 버전 |
+| schedule_entries | owner_id, entry_date, slots, version, updated_at | owner·entry_date 복합키, 정렬된 최대 36개 슬롯 JSONB, 양수 저장 버전 |
 | idempotency_records | owner_id, method, path, key, request_hash, state, response, expires_at | owner·method·path·key 유일 |
 
-tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. 첫 기능의 due_date는 원문 보존용 nullable 필드이며 이 기능 API에서 신규 지정·변경하지 않는다. 후속 명세에서 추가한다. status는 open·completed·deferred·canceled이고 화면에 □ 진행 전·✓ 완료·→ 미룸·× 취소로 표시한다. 우선순위 priority는 high·medium·low(상·중·하)다. 등록 화면은 제목만 받고 priority의 기본값 medium을 사용하며, 등록 후 scheduled 목록에서만 우선순위를 선택한다.
+tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. 첫 기능의 due_date는 원문 보존용 nullable 필드이며 이 기능 API에서 신규 지정·변경하지 않는다. 후속 명세에서 추가한다. status는 open·completed·deferred·canceled이고 화면에 □ 진행 전·✓ 완료·→ 미룸·× 취소로 표시한다. 우선순위 priority는 high·medium·low(상·중·하)다. 등록 화면은 제목만 입력받고 selected date를 scheduledDate로, isUnprocessed=false로 보내 priority의 기본값 medium을 사용한다. 현재 화면은 view=day에서만 우선순위를 선택한다. 날짜를 생략한 API 생성의 날짜 없음·미정리 기본값은 유지한다.
 
-기존 kind 필드의 task·appointment·event와 기본값 task는 기존 자료·API·요청 재생 호환을 위해 내부적으로 보존한다. 유형은 현재 사용 기능이 아니며 화면에서 선택·표시하지 않고 생성·수정 폼도 kind를 전송하지 않는다. `0002_task_priority_kind_and_status.sql`은 기존 제목·날짜·버전을 보존한 채 priority·kind를 추가한다. 유형 화면 제거 때문에 기존 API·DB 제약을 바꾸거나 kind 값을 재기록하지 않는다. 자유 기록은 별도 `0003_daily_journal.sql`로 추가하며 기존 과제 자료를 변경하지 않는다. 적용 후 실행 테이블은 8개다.
+기존 kind 필드의 task·appointment·event와 기본값 task는 기존 자료·API·요청 재생 호환을 위해 내부적으로 보존한다. 유형은 현재 사용 기능이 아니며 화면에서 선택·표시하지 않고 생성·수정 폼도 kind를 전송하지 않는다. `0002_task_priority_kind_and_status.sql`은 기존 제목·날짜·버전을 보존한 채 priority·kind를 추가한다. 유형 화면 제거 때문에 기존 API·DB 제약을 바꾸거나 kind 값을 재기록하지 않는다. 자유 기록은 별도 `0003_daily_journal.sql`로 추가하며 기존 과제 자료를 변경하지 않는다. 자유 기록을 추가한 0003 이후 일정의 0004를 포함하면 실행 테이블은 9개, 순차 마이그레이션은 5개다.
 
 완료 상태는 completed_at 존재 여부와 일치한다. completed에서 어느 다른 상태로 이동해도 completed_at을 비우고 이전 완료 활동을 completion_undone 활동과 연결한다. canceled·deferred에서 다시 completed로 전환하면 새로운 완료 활동을 생성하며 유효 완료 활동은 하나만 남는다. 미룸은 상태 표시만 변경하고 실행일을 유지하며, 날짜 변경은 별도 명시적 수정으로 처리한다. 취소는 삭제가 아니므로 같은 날짜에서 표시하고 open으로 복원할 수 있다. 활동 행은 과제 소유자와 같은 owner를 강제하며 다른 사용자의 과제를 연결하지 않는다.
+
+## 하루 할 일 한도와 일정 저장 (V-12·V-14)
+
+하루 할 일 한도는 owner_id·scheduled_date의 모든 상태를 합산한다. 같은 날짜의 미정리 항목·완료·취소도 각각 1개이며 신규 생성 또는 다른 날짜에서의 이동을 처리할 때 최대 5개를 검사한다. `task-day` scope의 날짜별 advisory lock과 개수 확인을 같은 쓰기 트랜잭션 안에서 수행한다. 가득 차면 422 DAILY_TASK_LIMIT로 거부하고 과제·활동·성공 재생 상태를 남기지 않는다. 날짜가 그대로인 제목·상태 변경과 기존 5개 초과 자료의 읽기를 제한하지 않으며, 일괄 삭제나 잘라내기 마이그레이션은 없다.
+
+기존 view=scheduled는 완료를 제외하는 호환 조회다. 신규 view=day는 해당 실행일의 모든 상태를 생성 시각·ID 순으로 반환하며, 현재 화면과 5개 집계가 사용한다. 날짜 없는 과제는 한도에 포함하지 않는다. API의 POST는 기존 제목만 생성도 유지하지만, 화면은 title·scheduledDate·isUnprocessed=false를 명시하여 바로 하루 할 일에 넣는다.
+
+`0004_daily_schedule.sql`은 `schedule_entries`와 JSONB 검증 함수를 추가한다. 각 행은 계정·날짜별 36칸 일정 문서이고 자유 기록·과제와 독립된다. slots는 `{startMinute, title}` 객체의 배열이며 시작 분 360~1410, 30분 배수, 중복 없음, 오름차순을 강제한다. 제목은 NFC·trim 후 1~200 코드 포인트이고 CR·LF·NUL은 금지한다. API에서 입력 순서를 정규화하고 DB 제약으로 배열 구조·중복·범위·제목을 재검증한다. 빈 배열은 유효하며 updated_at은 UTC instant다.
+
+API 0.7의 `GET/PUT /api/schedule/{date}`는 date·slots·version·updatedAt과 ETag를 사용한다. 없는 날의 GET은 빈 slots·v0·updatedAt null이며 행을 만들지 않는다. 빈 최초 PUT과 현재 정규화 배열이 같은 PUT은 no-op이다. 실제 저장은 version을 증가시키며 슬롯 삭제도 배열 교체로 원자적으로 반영한다.
+
+일정 PUT은 세션·Origin·CSRF·요청 키·If-Match 확인 후 재생을 먼저 검사하고, `schedule` scope의 owner·날짜 advisory lock과 행 잠금으로 v0 최초 저장 경합까지 보호한다. 오래된 버전은 412, 같은 키의 다른 본문·버전은 409다. 일정 변경과 재생 응답은 같은 트랜잭션에 커밋·롤백하고, 공통 24시간 보관 기간의 재시도 정책을 적용한다. 일정은 과제 활동을 만들지 않으며 task-day·journal·schedule 잠금 scope를 구분한다.
+
+일정의 시각은 로컬 날짜에 붙은 표시용 분 값이다. 06:00~24:00의 36칸은 시간대·DST에 따라 UTC 이벤트로 재계산하지 않고, 시간대 변경으로 저장 날짜나 슬롯을 이동하지 않는다. 반복·기간 이벤트·알림·외부 캘린더와의 연결은 후속 모델에서 다룬다.
 
 ## 날짜별 자유 기록과 동시 저장 (V-13)
 
@@ -25,7 +40,7 @@ tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instan
 
 본문 content는 일반 텍스트이며 CRLF를 LF로 바꾼 뒤 최대 10,000 Unicode 코드 포인트를 허용한다. NUL은 API·공통 규칙에서 거부하고 PostgreSQL text에도 저장하지 않는다. trim·NFC 정규화는 하지 않으며 연속 공백·빈 줄·마지막 줄바꿈을 보존한다. 빈 문자열은 유효하다. DB는 길이·CRLF·날짜 범위·양수 저장 버전 제약을 유지하고, 클라이언트와 서버는 `src/domain/journal.ts`를 공유한다.
 
-OpenAPI 0.6의 `GET /api/journal/{date}`와 `PUT /api/journal/{date}`는 `{date, content, version, updatedAt}`과 ETag를 사용한다. 없는 날짜는 행을 만들지 않고 빈 content·version 0·updatedAt null·ETag `"v0"`를 반환한다. DB에 실제 저장된 행은 version 1 이상이다. 없는 날짜에 빈 본문을 PUT하면 no-op으로 v0를 유지하며, 기존 글을 비우면 같은 행을 빈 본문으로 변경하고 버전을 증가시킨다.
+OpenAPI 0.7의 `GET /api/journal/{date}`와 `PUT /api/journal/{date}`는 `{date, content, version, updatedAt}`과 ETag를 사용한다. 없는 날짜는 행을 만들지 않고 빈 content·version 0·updatedAt null·ETag `"v0"`를 반환한다. DB에 실제 저장된 행은 version 1 이상이다. 없는 날짜에 빈 본문을 PUT하면 no-op으로 v0를 유지하며, 기존 글을 비우면 같은 행을 빈 본문으로 변경하고 버전을 증가시킨다.
 
 자유 기록의 쓰기 순서는 다음과 같다.
 
@@ -64,7 +79,7 @@ OpenAPI 0.6의 `GET /api/journal/{date}`와 `PUT /api/journal/{date}`는 `{date,
 
 ## 우선순위·상태 조회와 기존 필드 호환
 
-- 날짜별 scheduled 조회는 completed를 제외하여 미룸·취소 기호를 유지한다. overdue는 open·deferred만 포함하며 취소 항목은 제외한다. 입력함은 기존 is_unprocessed 규칙을 유지한다.
+- 현재 day 조회는 모든 상태를 포함한다. 기존 scheduled 조회는 completed를 제외하여 미룸·취소 기호를 유지한다. overdue는 open·deferred만 포함하며 취소 항목은 제외한다. 입력함은 기존 is_unprocessed 규칙을 유지한다.
 - priority 변경과 호환 API의 kind 변경은 버전 조건과 요청 재생·소유권 검사를 거치고 활동을 남긴다. 동일 값 변경은 버전과 활동을 늘리지 않는다. 현재 화면은 kind 변경 기능을 제공하지 않으며 다른 필드의 변경에도 기존 kind를 유지한다.
 - 이전 API 요청의 hash를 보존하기 위해 신규 필드가 생략되면 정규화된 요청에 억지로 기본값을 추가하지 않는다. 과거 응답을 재생할 때만 누락된 priority·kind를 medium·task로 보충하며 저장된 원문 응답·버전은 변경하지 않는다.
 
