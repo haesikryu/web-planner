@@ -47,4 +47,4 @@ BR-01 원본 공유, BR-02 날짜 분리, BR-05 정리 여부와 실행 상태 �
 
 `acceptance.feature`의 시나리오를 상세 테스트로 연결한다. 현재 시나리오는 작성 초안이며 자동화 구현이나 실행 결과가 아니다. 계정 격리·중복 요청·완료 상태는 통합 테스트로, 입력부터 완료까지는 대표 E2E로 검증한다.
 
-plan.md, ux.md, data-model.md, contracts/openapi.json에 설계 초안을 작성하고 tasks.md와 traceability.md에 작업·검증을 연결했다. 현재는 기술 스택과 출시 날짜를 확정하지 않는다. 문서 검토와 기술 선정 뒤 구현한다.
+plan.md, ux.md, data-model.md, contracts/openapi.json에 설계 초안을 작성하고 tasks.md와 traceability.md에 작업·검증을 연결했다. 실행 기술은 ADR-002로 선정하고 개발 기반을 구성했다. 실제 인증·과제 기능은 이후 구현하며 출시 날짜는 미정이다.

@@ -8,6 +8,8 @@
 
 검증된 인증 라이브러리로 Google OpenID Connect Authorization Code 흐름을 구현한다. state·nonce·PKCE와 정확한 리다이렉트 URI 검증을 적용한다. 라이브러리·운영 도메인은 기술 선정 시 고정한다. 로그인용 scope는 openid·email로 제한하고 Drive·Calendar 권한을 요청하지 않는다.
 
+2026-11-07 ADR-002에서 Better Auth 1.7.18을 선정했다. 이 결정은 라이브러리 설치까지이며 실제 공급자 연결과 세션 정책 적합성 검증은 T-003에서 수행한다. 운영 도메인은 아직 미정이다.
+
 외부 계정 키는 검증된 issuer와 sub의 조합이다. 이메일은 변경될 수 있으므로 계정 소유권 키로 사용하지 않는다. 서명·issuer·audience·만료·nonce 검증에 실패하면 세션을 발급하지 않는다. 콜백 오류에서 토큰이나 개인정보를 화면·로그에 노출하지 않는다.
 
 브라우저에는 서비스 자체의 불투명 세션 쿠키를 사용한다. 운영 HTTPS에서 Secure·HttpOnly·SameSite=Lax, Path=/를 사용하고 Domain은 지정하지 않는다. 인증 토큰을 localStorage에 저장하지 않는다. 쓰기 API는 세션에 결합한 CSRF 토큰과 Origin 검사를 적용한다. SameSite만으로 CSRF 방어를 대체하지 않는다.

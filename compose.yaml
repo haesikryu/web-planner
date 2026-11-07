@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:18
+    ports:
+      - "127.0.0.1:54329:5432"
+    environment:
+      POSTGRES_USER: planner_local
+      POSTGRES_PASSWORD: planner_local_only
+      POSTGRES_DB: planner_local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U planner_local -d planner_local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - planner_local_data:/var/lib/postgresql
+
+volumes:
+  planner_local_data:

@@ -1,6 +1,7 @@
 """Check local contract references and FEAT-001 traceability; no runtime claims."""
 import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,9 +61,13 @@ check(planned == tagged, 'Scenario/traceability mismatch: ' + str(planned ^ tagg
 tasks = (ROOT / 'specs/001-capture-complete/tasks.md').read_text()
 check(len(re.findall(r'^\| T-\d+ \|', tasks, re.M)) == 11, 'Expected 11 planned tasks')
 
-for path in ROOT.rglob('*.md'):
-    if '.git' in path.parts:
-        continue
+public_documents = subprocess.run(
+    ['git', '-c', 'core.quotepath=false', 'ls-files', '--cached', '--others',
+     '--exclude-standard', '-z', '--', '*.md'],
+    cwd=ROOT, check=True, capture_output=True, text=True,
+).stdout.split('\0')
+for relative in filter(None, public_documents):
+    path = ROOT / relative
     text = path.read_text()
     check(not re.search(r'[A-Z0-9._%+-]+@(?:gmail\.com)\b', text, re.I),
           'Personal email in public document: ' + str(path.relative_to(ROOT)))
