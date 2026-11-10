@@ -178,7 +178,7 @@ body:has(.diary-app) .brand-mark { width: 29px; height: 29px; line-height: 29px;
 .schedule-row.half-hour { border-bottom-color: #bdcbb2; }
 .schedule-row > label { display: flex; align-items: center; justify-content: center; gap: 2px; padding: 3px 5px; background: #eef1e5; color: #42563e; font: 11px Georgia, serif; }
 .schedule-until { display: none; }
-.planner .schedule-row input { border: 0; border-radius: 0; background: transparent; padding: 5px 9px; font-size: 13px; }
+.planner .schedule-row input { min-height: 0; border: 0; border-radius: 0; background: transparent; padding: 5px 9px; font-size: 13px; }
 .planner .schedule-row input:focus { position: relative; outline-offset: -3px; }
 .schedule-row:focus-within { background: #f0f5e9; }
 .schedule-row input:disabled { opacity: .65; }

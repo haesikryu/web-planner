@@ -80,6 +80,30 @@ async function dragTask(page: Page, title: string, target: string, touch: boolea
     await page.mouse.move(end.x, end.y, { steps: 8 }); await page.mouse.up();
   }
 }
+async function expectScheduleSlotInViewport(slot: Locator, viewport: { name: string; width: number; height: number }) {
+  const description = `${viewport.name} ${viewport.width}×${viewport.height}: 23:30 일정 must be fully visible`;
+  try {
+    await expect(slot, description).toBeInViewport({ ratio: 1 });
+  } catch (error) {
+    const layout = await slot.evaluate(element => {
+      const boxes = [];
+      for (let node: Element | null = element; node; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (node !== element && !node.matches(".schedule-row, fieldset, .schedule-editor, .diary-page-left, .planner-day") && style.overflowX === "visible" && style.overflowY === "visible") continue;
+        const rect = node.getBoundingClientRect();
+        boxes.push({
+          element: `${node.tagName.toLowerCase()}${node.id ? `#${node.id}` : ""}.${node.className}`,
+          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height, right: rect.right, bottom: rect.bottom },
+          client: { width: node.clientWidth, height: node.clientHeight }, scroll: { top: node.scrollTop, left: node.scrollLeft, width: node.scrollWidth, height: node.scrollHeight },
+          css: { overflowX: style.overflowX, overflowY: style.overflowY, boxSizing: style.boxSizing, minHeight: style.minHeight, paddingTop: style.paddingTop, paddingBottom: style.paddingBottom, borderTop: style.borderTopWidth, borderBottom: style.borderBottomWidth, lineHeight: style.lineHeight, gridTemplateRows: style.gridTemplateRows },
+        });
+      }
+      return { viewport: { width: innerWidth, height: innerHeight, devicePixelRatio, visualHeight: visualViewport?.height, visualScale: visualViewport?.scale }, boxes };
+    }).catch(cause => ({ diagnosticError: cause instanceof Error ? cause.message : String(cause) }));
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nLayout diagnostics: ${JSON.stringify(layout)}`, { cause: error });
+  }
+}
+
 async function expectViewport(page: Page) {
   expect(await page.evaluate(() => ({
     horizontal: document.documentElement.scrollWidth <= window.innerWidth,
@@ -1126,7 +1150,7 @@ test("the visible date picker synchronizes tasks, schedule and journal within co
     for (let row = 1; row <= 5; row++) await expect(primary(page).getByRole("textbox", { name: `${row}번째 할 일`, exact: true })).toBeInViewport({ ratio: 1 });
     await expect(primary(page).getByRole("button", { name: "일정 저장", exact: true })).toBeInViewport({ ratio: 1 });
     await showScheduleSlot(page, "23:30");
-    await expect(primary(page).getByLabel("23:30 일정", { exact: true })).toBeInViewport({ ratio: 1 });
+    await expectScheduleSlotInViewport(primary(page).getByLabel("23:30 일정", { exact: true }), viewport);
     await expectViewport(page);
     await showDiaryPage(page, "자유 기록");
     await expect(primary(page).getByLabel("자유롭게 쓰는 글", { exact: true })).toBeInViewport({ ratio: 1 });

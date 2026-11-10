@@ -48,3 +48,10 @@ jobs:
       - run: npm run test:e2e -- --workers=2 --global-timeout=300000
       - run: npm run test:e2e:product -- --workers=2 --global-timeout=600000
       - run: npm run test:e2e:demo -- --workers=2 --global-timeout=600000
+      - uses: actions/upload-artifact@v7.0.2
+        if: failure()
+        with:
+          name: browser-failures
+          path: test-results/
+          retention-days: 7
+          if-no-files-found: ignore
