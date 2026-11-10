@@ -31,7 +31,7 @@
 - 사용자 확정: MVP 로그인은 Google만 제공한다. 공개 소스 저장소를 사용한다.
 - 설계안: 제목 1~200 Unicode 코드 포인트, 계정 시간대 고정, 완료 취소를 첫 기능에 포함한다. 상세 근거는 공통 규칙 문서에 있다.
 - 사용자 확정 D-01: 본인 전용 비공개 베타. 명시적 이메일 허용 목록·기존 세션 철회를 구현했다. [ADR-003](docs/decisions/ADR-003-private-beta.md) 참조.
-- 기반 검증: 명세·린트·타입·단위·브라우저·빌드를 로컬에서 확인했다. 원격 CI 결과는 검증 기록에서 별도로 관리한다.
+- 기반 검증: 명세·린트·타입·단위·브라우저·빌드를 로컬에서 확인했다. 2026-11-10 기존 GitHub 웹 로그인으로 CI의 PostgreSQL 18·제품/데모 브라우저 검사를 활성화했다. 로컬 검증과 각 커밋의 원격 실행 결과는 구분한다.
 - 실행 기술: Node 24, Next.js·React·TypeScript, Better Auth, PostgreSQL·Drizzle, Vitest·Playwright·Biome. 정확한 버전은 ADR-002와 잠금 파일 참조.
 - DB 상태: PGlite와 실제 Docker PostgreSQL 18 연결·마이그레이션·경쟁 조건·롤백 통과. 합성 DB의 pg_dump와 별도 DB pg_restore·데이터 확인 통과.
 - 외부 검증·결정 필요: 설정된 Google OAuth 클라이언트의 실제 로그인, 운영 도메인·리다이렉트 URI·비밀 관리·데이터 보관 정책. 비밀값은 공개 저장소에 등록하지 않는다.
