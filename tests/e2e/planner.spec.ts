@@ -17,6 +17,23 @@ function secondary(page: Page) {
 function dailyRow(page: Page, title: string, scope: Locator = primary(page)) {
   return scope.locator(".daily-task-row[data-task-id]").filter({ has: page.getByRole("button", { name: `${title} 상태 변경`, exact: true }) });
 }
+
+// Observe the target, but reach it only through the browser's actual tab order.
+// This deliberately does not use locator.focus/click/fill or DOM focus mutation.
+async function tabTo(page: Page, target: Locator, reverse = false) {
+  await expect(target).toBeVisible();
+  await expect(target).toBeEnabled();
+  for (let step = 0; step < 80; step++) {
+    if (await target.evaluate(element => element === document.activeElement)) {
+      await expect(target).toBeFocused();
+      await expect(target).toBeInViewport();
+      return;
+    }
+    await page.keyboard.press(reverse ? "Shift+Tab" : "Tab");
+  }
+  throw new Error(`Keyboard tab order did not reach ${await target.getAttribute("aria-label") ?? await target.textContent()}`);
+}
+
 async function addDaily(page: Page, title: string, scope: Locator = primary(page)) {
   await showDiaryPage(page, "할 일·일정", scope);
   await closeHistory(page, scope);
@@ -148,6 +165,148 @@ async function createStoredTask(page: Page, title: string, fields: Record<string
   return response.json();
 }
 test.beforeEach(async ({ context }) => seedSession(context));
+
+test("keyboard-only daily workflow reaches inputs, ordering, status, calendar and saved records", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/");
+  const day = primary(page);
+  await expect(day.getByRole("status")).toHaveText("서버에 저장된 목록입니다.", { timeout: 15000 });
+  const originalDate = Temporal.PlainDate.from((await day.locator(".date-line").textContent() ?? "").slice(0, 10));
+  const chosenDate = originalDate.with({ day: originalDate.day === 1 ? 2 : 1 });
+  const first = day.getByRole("textbox", { name: "1번째 할 일", exact: true });
+  await tabTo(page, first);
+  expect(await first.evaluate(element => {
+    const style = getComputedStyle(element);
+    return {
+      focusVisible: element.matches(":focus-visible"),
+      outlined: style.outlineStyle !== "none" && Number.parseFloat(style.outlineWidth) > 0,
+      outlineColor: style.outlineColor,
+    };
+  })).toMatchObject({ focusVisible: true, outlined: true, outlineColor: expect.not.stringMatching(/^(transparent|rgba\([^)]*,\s*0\))$/) });
+  await page.keyboard.type("a".repeat(201));
+  await expect(first).toHaveAttribute("aria-invalid", "true");
+  await expect(day.getByRole("alert")).toContainText("200");
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.type("키보드 첫 과제");
+  await page.keyboard.press("Enter");
+  await expect(dailyRow(page, "키보드 첫 과제")).toBeVisible();
+  const second = day.getByRole("textbox", { name: "2번째 할 일", exact: true });
+  await expect(second).toBeFocused();
+  await page.keyboard.type("키보드 중요한 과제");
+  await page.keyboard.press("Tab");
+  await expect(dailyRow(page, "키보드 중요한 과제")).toBeVisible();
+  await expect(day.getByRole("textbox", { name: "3번째 할 일", exact: true })).toBeFocused();
+
+  const handle = day.getByRole("button", { name: "키보드 중요한 과제 순서 이동", exact: true });
+  await tabTo(page, handle, true);
+  await page.keyboard.press("Space");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Enter");
+  await expect(first).toHaveValue("키보드 중요한 과제");
+  await expect(handle).toBeFocused();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Escape");
+  await expect(first).toHaveValue("키보드 중요한 과제");
+  await expect(handle).toBeFocused();
+
+  const status = day.getByRole("button", { name: "키보드 중요한 과제 상태 변경", exact: true });
+  await tabTo(page, status, true);
+  await page.keyboard.press("Enter");
+  const choices = day.getByRole("group", { name: "키보드 중요한 과제 상태 선택", exact: true });
+  await expect(choices.getByRole("button", { name: "완료", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dailyRow(page, "키보드 중요한 과제").locator(".bullet-symbol")).toHaveText("✓");
+  await expect(status).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(choices.getByRole("button", { name: "완료", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(choices.getByRole("button", { name: "미루기", exact: true })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dailyRow(page, "키보드 중요한 과제").locator(".bullet-symbol")).toHaveText("→");
+  await expect(status).toBeFocused();
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Escape");
+  await expect(choices).toHaveCount(0);
+  await expect(status).toBeFocused();
+
+  const dateTrigger = page.getByRole("button", { name: "날짜 선택", exact: true });
+  const calendar = page.getByRole("dialog", { name: "날짜 선택", exact: true });
+  await tabTo(page, dateTrigger, true);
+  await page.keyboard.press("Enter");
+  await expect(calendar).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(calendar).toBeHidden();
+  await expect(dateTrigger).toBeFocused();
+  await page.keyboard.press("Enter");
+  await tabTo(page, calendar.getByRole("button", { name: `${chosenDate.day}, ${chosenDate.year}년 ${chosenDate.month}월 ${chosenDate.day}일`, exact: true }));
+  await page.keyboard.press("Enter");
+  await expect(calendar).toBeHidden();
+  await expect(day.locator(".date-line")).toContainText(chosenDate.toString());
+  await expect(first).toHaveValue("");
+  await expect(dateTrigger).toBeFocused();
+
+  const firstSlot = day.getByRole("textbox", { name: "06:00 일정", exact: true });
+  await tabTo(page, firstSlot);
+  await page.keyboard.type("키보드 아침 일정");
+  const timePage = day.getByRole("combobox", { name: "일정 시간대", exact: true });
+  // Exercise the visible paging buttons as a keyboard path through all 36 slots.
+  const nextTime = day.getByRole("button", { name: "다음 시간대", exact: true });
+  await tabTo(page, nextTime, true);
+  for (let step = 1; step <= 8; step++) {
+    await page.keyboard.press("Enter");
+    await expect(timePage).toHaveValue(String(step));
+    if (step < 8) await expect(nextTime).toBeFocused();
+  }
+  const lastSlot = day.getByRole("textbox", { name: "23:30 일정", exact: true });
+  await tabTo(page, lastSlot);
+  await page.keyboard.type("키보드 마지막 일정");
+  await tabTo(page, day.getByRole("button", { name: "일정 저장", exact: true }));
+  await page.keyboard.press("Enter");
+  await expect(day.locator(".schedule-save-status")).toHaveText("일정을 저장했습니다.");
+
+  const journalTab = day.getByRole("tab", { name: "자유 기록", exact: true });
+  if (await journalTab.isVisible()) {
+    await tabTo(page, journalTab, true);
+    await page.keyboard.press("Enter");
+  }
+  const journal = day.getByRole("textbox", { name: "자유롭게 쓰는 글", exact: true });
+  await tabTo(page, journal);
+  await page.keyboard.type("키보드로 작성한 글");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("두 번째 줄도 유지합니다.");
+  await tabTo(page, day.getByRole("button", { name: "글 저장", exact: true }));
+  await page.keyboard.press("Enter");
+  await expect(day.locator(".journal-save-status")).toHaveText("글을 저장했습니다.");
+
+  // Move away and return using the calendar, then reload to prove server persistence.
+  await tabTo(page, dateTrigger, true);
+  await page.keyboard.press("Enter");
+  await tabTo(page, calendar.getByRole("button", { name: `${originalDate.day}, ${originalDate.year}년 ${originalDate.month}월 ${originalDate.day}일`, exact: true }));
+  await page.keyboard.press("Enter");
+  await expect(day.locator(".date-line")).toContainText(originalDate.toString());
+  const planTab = day.getByRole("tab", { name: "할 일·일정", exact: true });
+  if (await planTab.isVisible()) { await tabTo(page, planTab); await page.keyboard.press("Enter"); }
+  await expect(first).toHaveValue("키보드 중요한 과제");
+  await expect(dailyRow(page, "키보드 중요한 과제").locator(".bullet-symbol")).toHaveText("→");
+  await page.reload();
+  await expect(day.getByRole("status")).toHaveText("서버에 저장된 목록입니다.", { timeout: 15000 });
+  await tabTo(page, dateTrigger);
+  await page.keyboard.press("Enter");
+  await tabTo(page, calendar.getByRole("button", { name: `${chosenDate.day}, ${chosenDate.year}년 ${chosenDate.month}월 ${chosenDate.day}일`, exact: true }));
+  await page.keyboard.press("Enter");
+  await expect(day.locator(".date-line")).toContainText(chosenDate.toString());
+  await expect(firstSlot).toHaveValue("키보드 아침 일정");
+  await tabTo(page, nextTime);
+  for (let step = 1; step <= 8; step++) {
+    await page.keyboard.press("Enter");
+    await expect(timePage).toHaveValue(String(step));
+    if (step < 8) await expect(nextTime).toBeFocused();
+  }
+  await expect(lastSlot).toHaveValue("키보드 마지막 일정");
+  if (await journalTab.isVisible()) { await tabTo(page, journalTab, true); await page.keyboard.press("Enter"); }
+  await expect(journal).toHaveValue("키보드로 작성한 글\n두 번째 줄도 유지합니다.");
+});
 
 test("inline daily creation and status undo keep the same original task", async ({ page }, testInfo) => {
   await page.goto("/");

@@ -2,6 +2,10 @@
 
 V-01~V-11의 첫 기능 경계를 단위·계약·실제 PostgreSQL·브라우저로 검증했다. V-08의 실제 Google 계정·공급자 환경 시험과 운영 수용 검수는 남아 있다. 자동 시나리오 통과와 사용자 수용 승인은 구분한다.
 
+2026-11-10 요구 기준 v0.2/명세 0.10은 [CR-0003](../../docs/changes/CR-0003-diary-requirements.md)에서 최신 UI의 독립 요구 ID를 연결한다. V-12 → FR-04-06·07·08·09와 FR-05-06, V-13 → FR-07-06, V-14 → FR-06-07이다. 날짜·반응형·저장 보호는 각 그룹에 공통 적용한다. FR-04-04는 원문을 남긴 폐기 요구이고 완료에 포함하지 않는다.
+
+FR-05-02는 product-api.test.ts의 `preserves an existing deadline when rescheduling, clearing and reassigning the execution date` 및 `preserves the deadline and original row when a reschedule is rejected by capacity or version`으로 V-04·V-11에 연결한다. NFR-02의 핵심 키보드 경로는 planner.spec.ts의 `keyboard-only daily workflow reaches inputs, ordering, status, calendar and saved records`와 기존 자동 접근성 검사를 함께 사용한다. 최신 실행 범위와 한계는 [요구 정합성 검증](../../docs/verification/requirements-alignment.md)을 따른다.
+
 2026-11-07의 최신 사용자 요청에 따라 V-12는 고정 다섯 줄의 순차 입력·inline 제목 수정·사각형 상태 메뉴·마우스·터치·키보드 드래그로 중요도 순서 지정과 하루 5개 제한을 검수한다. 날짜 없는 제목만의 API 생성은 기존 입력함 호환 검수로 유지한다. 유형과 상중하 우선순위 기능은 모든 화면에서 제거하고 기존 kind·priority는 자료·API·재생 호환으로만 검수한다. V-12의 구현 기준과 회귀 검수 연결은 아래와 같으며 실제 실행 결과는 검증 기록에서 별도로 관리한다. 같은 날의 후속 사용자 요청은 V-13으로 연결하여 왼쪽 할 일·오른쪽 날짜별 자유 기록을 첫 기능에 확장한다. 후속 V-14는 왼쪽 06:00~24:00의 36칸 일정을 검수한다. 전체 일기·회고·일정 요구를 완료 처리하지 않는다.
 
 | 검증 ID | 수용 시나리오 | 관련 요구 | 검증 수준 |

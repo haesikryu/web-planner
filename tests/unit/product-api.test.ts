@@ -528,6 +528,53 @@ describe("task API ownership, atomic changes and pagination", () => {
     expect(await (await patch(c.id, { scheduledDate: other }, { version: 2 })).json()).toMatchObject({ dailyOrder: 3, version: 3 });
     expect((await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json()).items.map((item: { id: string; dailyOrder: number }) => [item.id, item.dailyOrder])).toEqual([[a.id, 1], [d.id, 4]]);
   });
+  it("preserves an existing deadline when rescheduling, clearing and reassigning the execution date", async () => {
+    // Deadline editing is outside the current API; exercise preservation of a persisted non-null value.
+    const dueDate = "2026-11-10";
+    const [original] = await db.insert(schema.tasks).values({ ownerId: alice, title: "fixed deadline", scheduledDate: "2026-11-07", dailyOrder: 1, dueDate, isUnprocessed: false }).returning();
+    const firstKey = randomUUID();
+    let firstResponse: unknown;
+    for (const [index, scheduledDate] of ["2026-11-12", null, "2026-11-08"].entries()) {
+      const version = index + 1;
+      const result = await patch(original.id, { scheduledDate }, { version, ...(index === 0 ? { key: firstKey } : {}) });
+      expect(result.status).toBe(200); expect(result.headers.get("etag")).toBe(`"v${version + 1}"`);
+      const body = await result.json();
+      expect(body).toMatchObject({ id: original.id, scheduledDate, dueDate, dailyOrder: scheduledDate === null ? null : 1, version: version + 1 });
+      if (index === 0) firstResponse = body;
+      const read = await getTask(request(`/api/tasks/${original.id}`, "GET"), context(original.id));
+      expect(read.status).toBe(200); expect(read.headers.get("etag")).toBe(result.headers.get("etag"));
+      expect(await read.json()).toEqual(body);
+      const page = await listTasks(request(scheduledDate === null ? "/api/tasks?view=inbox" : `/api/tasks?view=day&date=${scheduledDate}`, "GET"));
+      expect((await page.json()).items).toEqual([body]);
+      expect(await db.select().from(schema.tasks)).toMatchObject([{ id: original.id, ownerId: alice, scheduledDate, dueDate, version: version + 1 }]);
+    }
+    const saved = (await db.select().from(schema.tasks))[0];
+    const replay = await patch(original.id, { scheduledDate: "2026-11-12" }, { version: 1, key: firstKey });
+    expect(replay.status).toBe(200); expect(replay.headers.get("etag")).toBe('"v2"');
+    expect(await replay.json()).toEqual(firstResponse);
+    expect(await db.select().from(schema.tasks)).toEqual([saved]);
+    expect((await db.select().from(schema.taskActivities)).filter(activity => activity.type === "scheduled_date_changed")).toHaveLength(3);
+  });
+  it("preserves the deadline and original row when a reschedule is rejected by capacity or version", async () => {
+    const destination = "2026-11-12", dueDate = "2026-11-10";
+    const [original] = await db.insert(schema.tasks).values({ ownerId: alice, title: "deadline survives rejected move", scheduledDate: "2026-11-07", dailyOrder: 1, dueDate, isUnprocessed: false }).returning();
+    for (let i = 0; i < 5; i++) await create({ title: `destination ${i}`, scheduledDate: destination });
+    const key = randomUUID();
+    const capacity = await patch(original.id, { scheduledDate: destination }, { version: 1, key });
+    expect(capacity.status).toBe(422); expect((await capacity.json()).code).toBe("DAILY_TASK_LIMIT");
+    expect((await db.select().from(schema.tasks).where(eq(schema.tasks.id, original.id)))[0]).toEqual(original);
+    expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
+    expect(await db.select().from(schema.taskActivities).where(eq(schema.taskActivities.taskId, original.id))).toHaveLength(0);
+    const changed = await patch(original.id, { scheduledDate: "2026-11-08" }, { version: 1, key });
+    expect(changed.status).toBe(200); expect(await changed.json()).toMatchObject({ scheduledDate: "2026-11-08", dueDate, version: 2 });
+    const saved = (await db.select().from(schema.tasks).where(eq(schema.tasks.id, original.id)))[0];
+    const stale = await patch(original.id, { scheduledDate: null }, { version: 1 });
+    expect(stale.status).toBe(412); expect((await stale.json()).code).toBe("VERSION_CONFLICT");
+    expect((await db.select().from(schema.tasks).where(eq(schema.tasks.id, original.id)))[0]).toEqual(saved);
+    const read = await getTask(request(`/api/tasks/${original.id}`, "GET"), context(original.id));
+    expect(read.headers.get("etag")).toBe('"v2"');
+    expect(await read.json()).toMatchObject({ id: original.id, scheduledDate: "2026-11-08", dueDate, version: 2 });
+  });
   it("validates standalone relative moves and owner isolation without consuming rejected keys", async () => {
     const undated = await (await create({ title: "undated" })).json(), key = randomUUID();
     for (const body of [{ move: "left" }, { move: null }, { move: "up", title: "changed" }, { move: "down", scheduledDate: "2026-11-07" }, { dailyOrder: 1 }]) {
