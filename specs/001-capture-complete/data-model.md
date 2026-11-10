@@ -1,26 +1,97 @@
 # 첫 기능 논리 데이터 설계
 
-상태: PostgreSQL·Drizzle 실행 스키마와 초기 SQL 마이그레이션 구현, 격리 DB 검증 완료. 실제 PostgreSQL 18 서버 통합은 대기 중이다.
+상태: PostgreSQL·Drizzle 실행 스키마와 SQL 마이그레이션 구현. 각 변경의 실제 PostgreSQL·격리 DB 검증 결과는 최신 검증 기록을 따른다.
 
 | 엔터티 | 핵심 필드 | 제약 |
 |---|---|---|
 | users | id, timezone, created_at | timezone은 검증된 IANA ID |
 | identities | user_id, provider_id, subject | google 공급자·고정 issuer 검증, provider_id·subject 유일, 이메일 자동 병합 금지 |
 | sessions | id, token_hash, user_id, created_at, updated_at, expires_at | bearer 원문은 해시 저장. updated_at은 마지막 활동, created_at은 절대 만료 기준. CSRF는 세션 ID와 서버 비밀로 도출 |
-| tasks | id, owner_id, title, status, scheduled_date, due_date, is_unprocessed, completed_at, version, created_at, updated_at | owner 필수, title 규칙, version 양수 |
-| task_activities | id, owner_id, task_id, type, occurred_at, invalidated_by | 완료·완료취소·실행일변경·정리 상태변경 기록 |
+| verifications | id, identifier, value, expires_at, created_at, updated_at | OAuth state·PKCE의 단기 보관과 일회 소비 |
+| tasks | id, owner_id, title, priority, kind, status, scheduled_date, daily_order, due_date, is_unprocessed, completed_at, version, created_at, updated_at | owner 필수, title 규칙, version 양수, 실행일 없음 iff daily_order null·그 외 양수 |
+| task_activities | id, owner_id, task_id, type, occurred_at, invalidated_by, details | 생성·완료·완료취소·미룸·취소·복원·실행일·마감일·정리·순서·호환 우선순위/유형 기록. details는 당시 계획 before/after/version, 기존 활동은 null |
+| journal_entries | owner_id, entry_date, content, version, updated_at | owner·entry_date 복합 기본키, 0~10,000 코드 포인트, 양수 저장 버전 |
+| schedule_entries | owner_id, entry_date, slots, version, updated_at | owner·entry_date 복합키, 정렬된 최대 36개 슬롯 JSONB, 양수 저장 버전 |
 | idempotency_records | owner_id, method, path, key, request_hash, state, response, expires_at | owner·method·path·key 유일 |
 
-tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. 첫 기능의 due_date는 원문 보존용 nullable 필드이며 이 기능 API에서 신규 지정·변경하지 않는다. 후속 명세에서 추가한다. status는 첫 기능 open·completed만 사용하며 보류·취소 확대 시 마이그레이션한다.
+tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. API 0.10부터 due_date를 생성·수정할 수 있으며 scheduled_date와 독립이다. 둘 다 0001-01-01~9999-12-31의 날짜 또는 null이고 실행일보다 이른 마감일도 유효하다. 날짜를 생략한 기존 요청 해시에 dueDate 기본값을 추가하지 않는다. status는 open·completed·deferred·canceled이고 화면에 □ 진행 전·✓ 완료·→ 미룸·× 취소로 표시한다. 기존 priority는 high·medium·low이고 현재 화면에서는 표시하거나 선택하지 않는다. 화면의 중요도는 날짜별 daily_order의 오름차순 위치로 표현한다. 등록 화면은 제목만 입력받고 selected date를 scheduledDate로, isUnprocessed=false로 보내 priority의 기본값 medium을 사용한다. 현재 화면은 고정된 다섯 줄에서 제목을 순차 입력하고 view=day의 순서를 드래그 핸들로 바꾸며 화면은 moveTo를 보낸다. priority·kind는 생성·수정 요청에 포함하지 않는다. 날짜를 생략한 API 생성의 날짜 없음·미정리 기본값은 유지한다.
 
-완료 상태는 completed_at 존재 여부와 일치한다. 완료 취소는 completed_at을 비우고 이전 완료 활동을 새 취소 활동과 연결한다. 활동 행은 과제 소유자와 같은 owner를 강제하며 다른 사용자의 과제를 연결하지 않는다.
+## 마감일·활동 스냅샷 확장 (V-15, API 0.10)
 
-## 원자적 쓰기
+`0006`은 task_activities에 nullable JSONB details를 추가한다. 기존 과제와 활동의 ID·상태·날짜·시각·무효화 연결을 보존하고 details만 null로 둔다. 현재 과제의 날짜나 순서를 과거 활동에 backfill하지 않는다. 이 변경 후 테이블 수는 9개 그대로이고 순차 마이그레이션은 7개다.
+
+새 활동의 details는 `{before, after, version}`이다. before/after는 `{scheduledDate,dueDate,status,dailyOrder}`이며 과제와 같은 달력 날짜·상태·날짜/순서 동치 규칙을 따른다. created 활동만 before=null이고 version은 생성·변경 후 양수 과제 버전이다. 새 과제 생성은 created 활동을 기록하고 due_date_changed를 추가한다. 기존 날짜·상태·순서 활동에도 같은 변경의 스냅샷을 넣는다. 같은 요청에서 여러 활동이 생기면 같은 before/after/version을 사용하며 순서 이동 구간은 각 행의 이전/이후 순서를 기록한다.
+
+활동의 과거 스냅샷은 이후 과제 변경으로 수정하지 않는다. 완료 취소는 기존처럼 완료 활동의 invalidated_by를 새 completion_undone ID에 연결하지만 기록을 지우거나 details를 현재 값으로 바꾸지 않는다. DB의 JSON 제약은 스냅샷 구조와 값 범위를 검증하고 소유자 FK를 유지한다. 날짜·활동·요청 재생 응답은 같은 트랜잭션에 커밋하며 동일 값·재생은 새 활동을 만들지 않는다.
+
+`GET /api/tasks/{taskId}/activities`는 먼저 소유 과제를 확인하고 owner·task_id 필터를 적용한다. occurred_at 내림차순·ID 오름차순으로 조회하고 owner·taskId·limit에 묶인 서명 커서로 페이지를 잇는다. 응답은 id·taskId·type·occurredAt·invalidatedBy·details만 포함하며 owner와 본문을 노출하지 않는다. details=null은 이전 값 미보존이라는 명시적인 데이터 상태다.
+
+활동·과제 목록의 커서 경계 시각에는 PostgreSQL의 마이크로초 정밀도를 보존한다. 응답의 ISO 밀리초 표시와 내부 커서 경계는 별개이며, 커서 생성이나 SQL 비교에서 DB 시각을 JavaScript Date로 반올림하지 않는다. 기존 3자리 소수부 서명 커서는 owner 범위의 같은 anchor 행과 밀리초 값이 일치할 때 DB 정밀도를 복원해 호환한다. 기존 정렬과 조회 scope는 유지하며 페이지는 변경 가능한 원본 조회이지 고정된 스냅샷이 아니다.
+
+`view=due&date=D`는 due_date=D, status IN (open,deferred), scheduled_date IS DISTINCT FROM D인 과제를 owner 범위에서 조회한다. 같은 날짜의 실행 과제와 중복하지 않고 마감만 있는 과제는 실행일 다섯 줄 한도에 포함하지 않는다. 마감일만 바꿀 때 과제의 daily_order를 다시 쓰거나 대상 마감일 개수 제한을 적용하지 않는다.
+
+체험 저장소는 schemaVersion 6에서 과제별 dueDate와 activities를 검증한다. 이전 schemaVersion 1~5에서 누락된 dueDate는 null로 보충하되 이미 존재하는 유효한 마감일은 보존한다. 이전 체험 형식은 활동을 보관하지 않았으므로 activities는 빈 배열로 전환하고 과거 생성/날짜 변경 기록을 만들어내지 않는다. 반면 실제 DB의 기존 활동은 details=null 행으로 그대로 조회한다. 이 두 이전 자료 상태를 구별한다.
+
+체험의 과제·활동·요청 재생 결과는 같은 상태 객체로 성공 저장될 때만 반영하며 sessionStorage 쓰기 실패 때 기존 원문을 보존한다. 읽기만으로 이전 형식 원문을 덮지 않는다. schemaVersion 6의 활동 구조·과제 참조·무효화 참조가 잘못되면 빈 자료로 복구하거나 조용히 재작성하지 않고 오류를 표시한다. 제품 DB나 인증 쿠키로 옮기지 않는다.
+
+기존 kind 필드의 task·appointment·event와 기본값 task는 기존 자료·API·요청 재생 호환을 위해 내부적으로 보존한다. 유형은 현재 사용 기능이 아니며 화면에서 선택·표시하지 않고 생성·수정 폼도 kind를 전송하지 않는다. `0002_task_priority_kind_and_status.sql`은 기존 제목·날짜·버전을 보존한 채 priority·kind를 추가한다. 유형 화면 제거 때문에 기존 API·DB 제약을 바꾸거나 kind 값을 재기록하지 않는다. 자유 기록은 별도 `0003_daily_journal.sql`로 추가하며 기존 과제 자료를 변경하지 않는다. 0003 자유 기록, 0004 일정, 0005 날짜별 순서를 포함하여 실행 테이블은 9개, 순차 마이그레이션은 6개다.
+
+완료 상태는 completed_at 존재 여부와 일치한다. completed에서 어느 다른 상태로 이동해도 completed_at을 비우고 이전 완료 활동을 completion_undone 활동과 연결한다. canceled·deferred에서 다시 completed로 전환하면 새로운 완료 활동을 생성하며 유효 완료 활동은 하나만 남는다. 미룸은 상태 표시만 변경하고 실행일을 유지하며, 날짜 변경은 별도 명시적 수정으로 처리한다. 취소는 삭제가 아니므로 같은 날짜에서 표시하고 open으로 복원할 수 있다. 활동 행은 과제 소유자와 같은 owner를 강제하며 다른 사용자의 과제를 연결하지 않는다.
+
+## 하루 할 일 한도와 일정 저장 (V-12·V-14)
+
+하루 할 일 한도는 owner_id·scheduled_date의 모든 상태를 합산한다. 같은 날짜의 미정리 항목·완료·취소도 각각 1개이며 신규 생성 또는 다른 날짜에서의 이동을 처리할 때 최대 5개를 검사한다. `task-day` scope의 날짜별 advisory lock과 개수 확인을 같은 쓰기 트랜잭션 안에서 수행한다. 가득 차면 422 DAILY_TASK_LIMIT로 거부하고 과제·활동·성공 재생 상태를 남기지 않는다. 날짜가 그대로인 제목·상태 변경과 기존 5개 초과 자료의 읽기를 제한하지 않으며, 일괄 삭제나 잘라내기 마이그레이션은 없다.
+
+기존 view=scheduled는 완료를 제외하는 호환 조회다. view=day는 해당 실행일의 모든 상태를 daily_order·생성 시각·ID 순으로 반환하며, 현재 화면과 5개 집계가 사용한다. 날짜 없는 과제는 한도에 포함하지 않는다. API의 POST는 기존 제목만 생성도 유지하지만, 화면은 title·scheduledDate·isUnprocessed=false를 명시하여 바로 하루 할 일에 넣는다.
+
+`0005_task_daily_order.sql`은 nullable integer daily_order를 추가한다. 기존 실행일 있는 항목은 owner_id·scheduled_date별 created_at·id 순의 row_number로 backfill하며 날짜 없는 항목은 null이다. ID·제목·priority·kind·상태·버전·시각과 5개 초과 자료를 보존한다. 날짜 없음과 순서 null의 동치 및 날짜가 있으면 양수라는 CHECK를 두며, owner·실행일·daily_order·created_at·id 인덱스로 day 조회를 지원한다. 순서값은 표시 행 번호와 같을 필요가 없고 삭제·날짜 이동 후 간격을 허용한다.
+
+신규 생성과 다른 날짜로 이동하는 항목은 대상 날짜의 max(daily_order)+1을 사용한다. 실행일 해제는 null로 바꾸며 제목·상태·완료 취소는 순서를 유지한다. owner·날짜 잠금 아래 개수와 마지막 값을 읽으므로 동시 배정과 이동이 같은 마지막 순서를 계산하거나 한도를 초과하지 않는다. 관련 날짜는 정렬된 순서로 잠그고 대상 행의 버전과 날짜를 다시 검사한다.
+
+API 0.9의 새 순서 변경은 단독 `{moveTo: targetTaskId}` PATCH다. 다른 수정 필드와 섞거나 dailyOrder를 직접 요청하면 422이며, 날짜 없는 소스 또는 다른 날짜 대상도 422다. 없는 대상과 타인 대상은 404로 처리한다. 유효한 소스 If-Match를 먼저 확인하고 같은 항목을 대상으로 하면 no-op이다. 기존 단독 `{move:"up"}`·`{move:"down"}`도 호환 유지하며 경계 이동은 버전·활동을 늘리지 않는다.
+
+moveTo는 대상의 이동 전 인덱스에 소스를 삽입한다. [A,B,C,D]에서 A→C는 [B,C,A,D], D→B는 [A,D,B,C]다. 소스부터 대상까지 닫힌 구간의 기존 daily_order 숫자와 간격을 재사용하여 변경된 순서대로 배정한다. 구간 모든 행은 version+1·동일 updated_at·각 order_changed 활동을 남기며 구간 밖 행은 변경하지 않는다. owner·날짜 잠금과 행 잠금 아래 구간 전체·활동·재생 응답을 같은 트랜잭션으로 커밋하거나 롤백한다. 중간 행의 과거 버전 편집도 412로 검출되며 같은 키의 재시도는 원래 응답을 재생하고 다시 이동하지 않는다.
+
+이번 드래그 계약은 기존 daily_order 스키마와 daily-order-v1 커서를 사용하며 추가 테이블·마이그레이션·API 경로를 만들지 않는다. 날짜별 일정 9페이지와 책 페이지 탭도 화면 상태일 뿐 DB 문서를 나누지 않는다.
+
+체험 저장소는 schemaVersion 5에서 날짜별 양수 순서를 검증한다. 이전 버전의 누락 순서는 생성 시각·ID 순으로 메모리에서 보충하고 성공한 저장에만 새 형식으로 반영한다. 최신 형식의 잘못된 순서·중복 순서는 조용히 재배열하거나 빈 자료로 덮어쓰지 않는다.
+
+클라이언트는 inline 편집을 시작한 원본 제목·버전·날짜를 보관한다. 편집 중 배경 조회로 이 버전을 갱신하지 않으며, 최신 원본이 내 제목과 같아지거나 날짜가 바뀌어도 자동 병합하지 않는다. 순서 이동 성공 후 전체 day 목록을 다시 읽어 영향 구간의 새 버전까지 반영한다. 과거 요청 재생 응답에서 없는 dailyOrder는 null로 보충하되 저장 원문·해시를 바꾸지 않고, 현재 원본 재조회로 실제 순서를 얻는다.
+
+`0004_daily_schedule.sql`은 `schedule_entries`와 JSONB 검증 함수를 추가한다. 각 행은 계정·날짜별 36칸 일정 문서이고 자유 기록·과제와 독립된다. slots는 `{startMinute, title}` 객체의 배열이며 시작 분 360~1410, 30분 배수, 중복 없음, 오름차순을 강제한다. 제목은 NFC·trim 후 1~200 코드 포인트이고 CR·LF·NUL은 금지한다. API에서 입력 순서를 정규화하고 DB 제약으로 배열 구조·중복·범위·제목을 재검증한다. 빈 배열은 유효하며 updated_at은 UTC instant다.
+
+API 0.9의 `GET/PUT /api/schedule/{date}`는 date·slots·version·updatedAt과 ETag를 사용한다. 없는 날의 GET은 빈 slots·v0·updatedAt null이며 행을 만들지 않는다. 빈 최초 PUT과 현재 정규화 배열이 같은 PUT은 no-op이다. 실제 저장은 version을 증가시키며 슬롯 삭제도 배열 교체로 원자적으로 반영한다.
+
+일정 PUT은 세션·Origin·CSRF·요청 키·If-Match 확인 후 재생을 먼저 검사하고, `schedule` scope의 owner·날짜 advisory lock과 행 잠금으로 v0 최초 저장 경합까지 보호한다. 오래된 버전은 412, 같은 키의 다른 본문·버전은 409다. 일정 변경과 재생 응답은 같은 트랜잭션에 커밋·롤백하고, 공통 24시간 보관 기간의 재시도 정책을 적용한다. 일정은 과제 활동을 만들지 않으며 task-day·journal·schedule 잠금 scope를 구분한다.
+
+일정의 시각은 로컬 날짜에 붙은 표시용 분 값이다. 06:00~24:00의 36칸은 시간대·DST에 따라 UTC 이벤트로 재계산하지 않고, 시간대 변경으로 저장 날짜나 슬롯을 이동하지 않는다. 반복·기간 이벤트·알림·외부 캘린더와의 연결은 후속 모델에서 다룬다.
+
+## 날짜별 자유 기록과 동시 저장 (V-13)
+
+`journal_entries`의 원본 키는 인증된 owner_id와 entry_date다. entry_date는 0001-01-01~9999-12-31의 달력 날짜이며 과제 실행일·마감일·완료 시각과 독립된다. updated_at은 UTC instant다. 계정 시간대는 처음 열 날짜를 정하지만 기존 글의 키나 내용을 시간대 변경으로 옮기지 않는다. users에 대한 FK는 계정 삭제 시 연관 행을 제거하며 모든 읽기·쓰기에는 현재 owner 조건이 필요하다.
+
+본문 content는 일반 텍스트이며 CRLF를 LF로 바꾼 뒤 최대 10,000 Unicode 코드 포인트를 허용한다. NUL은 API·공통 규칙에서 거부하고 PostgreSQL text에도 저장하지 않는다. trim·NFC 정규화는 하지 않으며 연속 공백·빈 줄·마지막 줄바꿈을 보존한다. 빈 문자열은 유효하다. DB는 길이·CRLF·날짜 범위·양수 저장 버전 제약을 유지하고, 클라이언트와 서버는 `src/domain/journal.ts`를 공유한다.
+
+OpenAPI 0.9의 `GET /api/journal/{date}`와 `PUT /api/journal/{date}`는 `{date, content, version, updatedAt}`과 ETag를 사용한다. 없는 날짜는 행을 만들지 않고 빈 content·version 0·updatedAt null·ETag `"v0"`를 반환한다. DB에 실제 저장된 행은 version 1 이상이다. 없는 날짜에 빈 본문을 PUT하면 no-op으로 v0를 유지하며, 기존 글을 비우면 같은 행을 빈 본문으로 변경하고 버전을 증가시킨다.
+
+자유 기록의 쓰기 순서는 다음과 같다.
+
+1. 세션·Origin·CSRF·요청 키·본문·날짜·If-Match를 검증한다. 본문은 `{content}`만 받고 소유자는 세션에서 결정한다. journal 경로만 최대 65,536바이트의 요청 본문을 허용하며 다른 API의 크기 제한을 확대하지 않는다.
+2. owner·method·path·key 범위에서 키를 선점하거나 같은 정규화 본문·If-Match의 보관 중 응답을 먼저 재생한다. 같은 키의 다른 본문·버전은 409이며 이전 버전을 사용한 동일 재시도도 재생 대상이다.
+3. 트랜잭션에서 owner·날짜의 advisory lock을 획득한 뒤 기존 행을 잠근다. 행이 아직 없는 최초 저장도 직렬화하여 행 잠금만으로 빠지는 신규 삽입 경합을 막는다. 제한 시간 내 잠금을 얻지 못하면 409 REQUEST_IN_PROGRESS로 같은 요청 재시도를 안내한다.
+4. 현재 행 버전 또는 없는 날짜의 0과 If-Match를 비교한다. 오래된 버전은 412이며 글을 덮어쓰지 않는다. 현재 본문과 같으면 버전·updated_at을 바꾸지 않는다. 실제 변경이면 신규 삽입 또는 조건부 수정을 수행한다.
+5. 글 변경과 재생 응답을 같은 트랜잭션에 저장하고 커밋 후 200을 반환한다. 중간 실패는 글과 처리 완료 키를 함께 롤백한다. 글 변경을 과제 완료 활동으로 기록하지 않는다.
+
+같은 날짜에 서로 다른 키로 처음 저장하는 두 v0 요청은 둘 다 성공하여 덮어쓸 수 없다. 한 요청이 v1을 만들면 다른 요청은 412를 받거나 잠금 경합 시 재시도 가능한 응답을 받는다. 같은 키의 동시 재시도는 하나의 결과만 저장한다. 재생 보관 기간 24시간이 지나면 클라이언트는 불확실 요청을 재전송하지 않고 GET 확인 후 명시적 복구를 진행한다.
+
+화면 초안은 DB 행과 다르다. 같은 계정의 날짜별 메모리 캐시에 본문·읽은 버전·저장 상태를 보관하여 날짜 이동 때 초안을 유지한다. 이전 날짜·계정의 지연 응답이 현재 글을 덮지 않으며 계정 변경 때 캐시를 폐기한다. 성공 저장은 재조회해 확인하고, 미저장 초안은 새로고침·이탈 확인 후 사라질 수 있다. 체험 경로는 같은 계약을 sessionStorage에 구현하되 실제 DB·인증 쿠키·제품 API와 연결하지 않는다.
+
+## 원자적 과제 쓰기
 
 1. 세션·CSRF·입력 형식 확인.
 2. 사용자 범위에서 대상 과제 소유권 확인.
 3. 키 선점 또는 동일 요청 재생 확인.
-4. 버전 조건을 포함한 과제 삽입·수정.
+4. 관련 owner·날짜 잠금을 정렬된 순서로 얻고 행을 잠근 뒤 버전·날짜를 재검사한다. 생성·날짜 배정은 5개와 마지막 순서를 확인하며 moveTo는 영향 구간 전체를, 기존 move는 이웃 두 행을 원자적으로 바꾼다.
 5. 필요한 활동과 재생 응답 저장.
 6. 트랜잭션 커밋 후 성공 응답.
 
@@ -30,10 +101,27 @@ tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instan
 
 모든 조회에는 owner 조건이 포함된다. 초기 인덱스 후보는 owner·is_unprocessed·created_at, owner·status·scheduled_date, owner·completed_at, task_id·occurred_at이다. 실제 실행 계획과 부하 검증 후 확정한다.
 
-오늘 완료 조회는 현지 날짜 범위를 UTC 구간으로 변환해 현재 유효 완료 시각으로 조회한다. 날짜 경계 계산은 공통 모듈 하나가 담당한다. 모든 목록은 cursor 기반 페이지 처리, 기본 50개·최대 100개다. cursor에는 조회 조건을 결합하고 다른 사용자·다른 조회에 재사용하면 400으로 거부한다.
+오늘 완료 조회는 현지 날짜 범위를 UTC 구간으로 변환해 현재 유효 완료 시각으로 조회한다. 날짜 경계 계산은 공통 모듈 하나가 담당한다. 모든 목록은 cursor 기반 페이지 처리, 기본 50개·최대 100개다. cursor에는 조회 조건을 결합하고 다른 사용자·다른 조회에 재사용하면 400으로 거부한다. day 커서는 daily-order-v1 범위와 마지막 daily_order·created_at·id를 사용하며 이전 정렬의 커서를 혼용하지 않는다.
 
 ## 보관과 운영
 
-실행 기준은 `src/server/db/schema.ts`와 `migrations/0000_auth_and_task_foundation.sql`이다. users의 timezone·settings_version은 UTC·1로 시작한다. identities의 라이브러리 호환 필드는 공급자 토큰·비밀번호 저장을 CHECK로 차단한다. verifications에는 10분 OAuth state·PKCE 정보를 저장하고 라이브러리가 일회 소비한다. 만료 레코드 정리의 운영 주기는 T-011에서 정한다. 시간대 검증·제목 Unicode 공백 정규화는 T-005에서 완성한다.
+실행 기준은 `src/server/db/schema.ts`와 migrations의 SQL 이력이다. users는 검증된 기기 시간대·설정 버전 1로 생성하며 제안이 없으면 UTC다. identities는 공급자 토큰·비밀번호 저장을 CHECK로 차단한다. verifications의 10분 state·PKCE는 라이브러리가 일회 소비한다. T-005의 Unicode 제목·시간대 규칙을 API와 화면에서 공유한다. 두 번째 마이그레이션은 과제당 현재 유효 완료 활동 하나와 양수 설정 버전을 강제한다. db:prune으로 만료 기록을 제한된 묶음으로 정리하며 운영 주기는 T-011에서 정한다.
 
-전체 사용자 삭제·휴지통 정책은 FEAT-001의 실행 범위 밖이지만 이후 도입을 막지 않도록 owner 경계를 유지한다. 운영 데이터 내보내기·삭제와 백업 보관 기간은 별도 명세에서 연결한다. 개인정보 본문·제목·토큰·키 응답을 일반 로그에 기록하지 않는다. idempotency 응답 저장소도 개인 데이터이므로 접근 제어와 TTL 정리를 적용한다.
+전체 사용자 삭제·휴지통 정책은 FEAT-001의 실행 범위 밖이지만 이후 도입을 막지 않도록 owner 경계를 유지한다. 운영 데이터 내보내기·삭제와 백업 보관 기간은 별도 명세에서 연결한다. 자유 기록 본문을 포함한 개인정보 본문·제목·토큰·키 응답을 일반 로그에 기록하지 않는다. idempotency 응답 저장소도 개인 데이터이므로 접근 제어와 TTL 정리를 적용한다.
+
+## 우선순위·상태 조회와 기존 필드 호환
+
+- 현재 day 조회는 모든 상태를 포함한다. 기존 scheduled 조회는 completed를 제외하여 미룸·취소 기호를 유지한다. overdue는 open·deferred만 포함하며 취소 항목은 제외한다. 입력함은 기존 is_unprocessed 규칙을 유지한다.
+- priority 변경과 호환 API의 kind 변경은 버전 조건과 요청 재생·소유권 검사를 거치고 활동을 남긴다. 동일 값 변경은 버전과 활동을 늘리지 않는다. 현재 화면은 priority·kind 변경 기능을 제공하지 않으며 제목·상태·순서 변경에도 기존 두 값을 유지한다.
+- 이전 API 요청의 hash를 보존하기 위해 신규 필드가 생략되면 정규화된 요청에 억지로 기본값을 추가하지 않는다. 과거 응답을 재생할 때만 누락된 priority·kind·dailyOrder를 medium·task·null로 보충하며 저장된 원문 응답·버전은 변경하지 않는다.
+
+- PATCH 결과가 날짜 없는 비완료 항목이면 is_unprocessed=true를 보충해 입력함 접근을 보장한다. 명시적인 false 지정은 422로 거절한다. 완료에서 다른 상태로 복원하거나 실행일을 비울 때도 동일하며, 보충값은 행 잠금과 버전 검사 후에 계산하고 원래 요청의 재생 hash는 유지한다. 보충으로 실제 값이 바뀌면 같은 트랜잭션에서 버전과 processing_changed 활동을 기록하며, 이미 입력함에 있으면 동일 값 변경은 no-op이다. 과거 자료의 일괄 보정은 수행하지 않는다.
+
+
+## 두 날짜 화면의 상태와 저장 경계 (spec 0.9)
+
+두 날짜 보기에도 서버 원본 키는 기존 owner·task ID 또는 owner·entry_date다. 화면 위치 primary·secondary·cached는 저장 키가 아니며 API 0.9와 9개 테이블·6개 마이그레이션은 바뀌지 않는다. 각각의 날짜별 5개 한도·daily_order·schedule slots·journal content와 version을 독립적으로 유지한다.
+
+브라우저는 날짜를 키로 DayPlanner 인스턴스와 미저장 초안을 유지한다. 같은 D+1이 범위 이동으로 secondary에서 primary가 되어도 새 빈 편집기를 만들지 않으며 범위 밖 초안은 숨긴 캐시에 남긴다. 숨긴 범위의 재조회·poll은 중지한다. 요청의 owner·날짜·버전·키는 최초 요청에 고정되며 화면 회전·패널 위치 변경으로 바꾸지 않는다. 계정 변경은 모든 날짜 캐시를 폐기하고 일시 401은 초안과 요청을 보존한다.
+
+전역 변경 잠금은 어느 날짜에서든 쓰기·불확실 결과·충돌·inline 편집·드래그가 진행되는지 집계한다. 다른 날짜의 변경과 범위 이동을 제한하지만 해당 요청의 재시도·확인·명시적 충돌 복구는 허용한다. 한 날짜 표시로 줄어들 때 복구 대상 날짜를 자동 선택한다. 이 UI 상태는 DB의 저장 성공과 별개이며 서버 확인 전 성공으로 표시하지 않는다. 날짜 9999-12-31에서는 안전하게 두 번째 날짜를 생략한다.

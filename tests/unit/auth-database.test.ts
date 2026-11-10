@@ -17,7 +17,7 @@ vi.mock("../../src/server/auth/runtime", () => ({ getAuthRuntime: () => ({ auth,
 
 const pg = new PGlite();
 const db = drizzle(pg, { schema });
-const config = { baseUrl: "https://planner.example", databaseUrl: "unused", secret: "synthetic-only-secret-32-characters-long", google: { clientId: "test-google-client", clientSecret: "synthetic-client-secret" } };
+const config = { allowedEmails: ["alice@example.test", "bob@example.test", "new-person@example.test"], baseUrl: "https://planner.example", databaseUrl: "unused", secret: "synthetic-only-secret-32-characters-long", google: { clientId: "test-google-client", clientSecret: "synthetic-client-secret" } };
 const auth = createPlannerAuth(config, drizzleAdapter(db, { provider: "pg", schema, transaction: true }), true);
 const alice = "10000000-0000-4000-8000-000000000001";
 const bob = "10000000-0000-4000-8000-000000000002";
@@ -31,6 +31,27 @@ beforeAll(async () => {
 afterAll(async () => { vi.unstubAllGlobals(); await pg.close(); });
 
 describe("PostgreSQL schema and adapter integration (PGlite)", () => {
+  it("blocks login initiation and callbacks while login is paused", async () => {
+    const sessionsBefore = await db.select().from(schema.session);
+    const statesBefore = await db.select().from(schema.verification);
+    vi.stubEnv("AUTH_LOGIN_ENABLED", "false");
+    try {
+      const requests = [
+        new Request(`${config.baseUrl}/api/auth/sign-in/social`, { method: "POST", headers: { origin: config.baseUrl, "content-type": "application/json" }, body: JSON.stringify({ provider: "google" }) }),
+        new Request(`${config.baseUrl}/api/auth/callback/google?code=synthetic&state=synthetic`)
+      ];
+      for (const request of requests) {
+        const response = await (request.method === "POST" ? startLogin : callback)(request);
+        expect(response.status).toBe(503);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+        expect(response.headers.get("location")).toBeNull();
+        expect(response.headers.getSetCookie()).toHaveLength(0);
+        expect(await response.json()).toMatchObject({ code: "AUTH_UNAVAILABLE", message: "로그인이 일시 중지되었습니다." });
+      }
+      expect(await db.select().from(schema.session)).toEqual(sessionsBefore);
+      expect(await db.select().from(schema.verification)).toEqual(statesBefore);
+    } finally { vi.unstubAllEnvs(); }
+  });
   it("keeps new sign-ups closed until an explicit environment policy is configured", () => {
     const closed = createPlannerAuth(config, drizzleAdapter(db, { provider: "pg", schema, transaction: true }));
     expect(closed.options.socialProviders?.google).toMatchObject({ disableSignUp: true });
@@ -126,7 +147,7 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
     };
     const info = (idToken: string, nonce: string | undefined = "expected-nonce") => provider.getUserInfo({ idToken, expectedIdTokenNonce: nonce });
     expect((await info(token()))?.data).toMatchObject({ sub: "google-sub-alice" });
-    for (const changes of [{ nonce: "wrong" }, { iss: "https://attacker.test" }, { aud: "other-client" }, { exp: now - 100 }, { email_verified: false }]) {
+    for (const changes of [{ nonce: "wrong" }, { iss: "https://attacker.test" }, { aud: "other-client" }, { exp: now - 100 }, { email_verified: false }, { email: "outsider@example.test" }, { email: "alice+alias@example.test" }]) {
       expect(await info(token(changes))).toBeNull();
     }
     expect(await info(token({}, true))).toBeNull();
@@ -158,6 +179,16 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
     expect(ctx.authCookies.sessionToken).toMatchObject({ name: "__Host-planner-session", attributes: { secure: true, httpOnly: true, sameSite: "lax", path: "/" } });
     expect(ctx.authCookies.sessionToken.attributes.domain).toBeUndefined();
   });
+  it("rejects an existing session immediately when its owner is removed from the allowlist", async () => {
+    const ctx = await auth.$context;
+    const issued = await ctx.internalAdapter.createSession(bob);
+    const cookie = `__Host-planner-session=${encodeURIComponent(`${issued.token}.${await makeSignature(issued.token, config.secret)}`)}`;
+    config.allowedEmails.splice(config.allowedEmails.indexOf("bob@example.test"), 1);
+    try {
+      expect((await getSession(new Request(`${config.baseUrl}/api/session`, { headers: { cookie } }))).status).toBe(401);
+      expect(await ctx.internalAdapter.findSession(issued.token)).toBeNull();
+    } finally { config.allowedEmails.push("bob@example.test"); }
+  });
   it("does not revive idle or absolutely expired sessions", async () => {
     const ctx = await auth.$context;
     for (const patch of [ { updatedAt: new Date(Date.now() - 13 * 3600000) }, { createdAt: new Date(Date.now() - 8 * 86400000) } ]) {
@@ -183,7 +214,7 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ keys: [{ ...publicKey.export({ format: "jwk" }), kid: "callback-key", alg: "RS256" }] })));
     const perform = async (subject: string, email: string) => {
-      const started = await startLogin(new Request(`${config.baseUrl}/api/auth/sign-in/social`, { method: "POST", headers: { origin: config.baseUrl, "content-type": "application/json" }, body: JSON.stringify({ provider: "google", callbackURL: "https://attacker.test" }) }));
+      const started = await startLogin(new Request(`${config.baseUrl}/api/auth/sign-in/social`, { method: "POST", headers: { origin: config.baseUrl, "content-type": "application/json" }, body: JSON.stringify({ provider: "google", timezone: "Asia/Seoul", callbackURL: "https://attacker.test" }) }));
       const url = new URL((await started.json()).url);
       const now = Math.floor(Date.now() / 1000);
       const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: "callback-key" })).toString("base64url");
@@ -211,11 +242,17 @@ describe("PostgreSQL schema and adapter integration (PGlite)", () => {
       const blocked = await perform("other-google-sub-same-email", "alice@example.test");
       expect(blocked.completed.headers.get("location")).toBe(`${config.baseUrl}/?auth=error`);
       expect(await db.select().from(schema.user)).toHaveLength(2);
+      const outside = await perform("google-sub-outsider", "outsider@example.test");
+      expect(outside.completed.headers.get("location")).toBe(`${config.baseUrl}/?auth=error`);
+      expect(outside.completed.headers.getSetCookie().some(item => item.startsWith("__Host-planner-session=") && !item.includes("Max-Age=0"))).toBe(false);
+      expect(await db.select().from(schema.user)).toHaveLength(2);
+      expect(await db.select().from(schema.session)).toHaveLength(1);
       const created = await perform("google-sub-new-person", "new-person@example.test");
       expect(created.completed.headers.getSetCookie().some(item => item.startsWith("__Host-planner-session="))).toBe(true);
       const users = await db.select().from(schema.user);
       expect(users).toHaveLength(3);
-      expect(users.find(item => item.email === "new-person@example.test")).toMatchObject({ timezone: "UTC", settingsVersion: 1 });
+      expect(users.find(item => item.email === "new-person@example.test")).toMatchObject({ timezone: "Asia/Seoul", settingsVersion: 1 });
+      expect(users.find(item => item.id === alice)?.timezone).toBe("UTC");
     } finally { vi.unstubAllGlobals(); }
   });
   it("restores an isolated database snapshot with schema, migration journal and records", async () => {

@@ -1,21 +1,119 @@
 # 첫 기능 수용 조건과 검증 연결
 
-V-06·V-07·V-08의 인증·스키마 경계 일부를 격리 환경에서 검증했다. 실제 과제 API·실제 Google 인증을 포함한 전체 수용 시나리오는 미실행이다. ID는 연결 기준이며 같은 시나리오를 여러 수준에서 확인할 수 있다.
+V-01~V-11의 첫 기능 경계를 단위·계약·실제 PostgreSQL·브라우저로 검증했다. V-08의 실제 Google 계정·공급자 환경 시험과 운영 수용 검수는 남아 있다. 자동 시나리오 통과와 사용자 수용 승인은 구분한다.
+
+2026-11-10 요구 기준 v0.2/명세 0.10은 [CR-0003](../../docs/changes/CR-0003-diary-requirements.md)에서 최신 UI의 독립 요구 ID를 연결한다. V-12 → FR-04-06·07·08·09와 FR-05-06, V-13 → FR-07-06, V-14 → FR-06-07이다. 날짜·반응형·저장 보호는 각 그룹에 공통 적용한다. FR-04-04는 원문을 남긴 폐기 요구이고 완료에 포함하지 않는다.
+
+FR-05-02는 product-api.test.ts의 `preserves an existing deadline when rescheduling, clearing and reassigning the execution date` 및 `preserves the deadline and original row when a reschedule is rejected by capacity or version`으로 V-04·V-11에 연결한다. NFR-02의 핵심 키보드 경로는 planner.spec.ts의 `keyboard-only daily workflow reaches inputs, ordering, status, calendar and saved records`와 기존 자동 접근성 검사를 함께 사용한다. 최신 실행 범위와 한계는 [요구 정합성 검증](../../docs/verification/requirements-alignment.md)을 따른다.
+
+2026-11-07의 최신 사용자 요청에 따라 V-12는 고정 다섯 줄의 순차 입력·inline 제목 수정·사각형 상태 메뉴·마우스·터치·키보드 드래그로 중요도 순서 지정과 하루 5개 제한을 검수한다. 날짜 없는 제목만의 API 생성은 기존 입력함 호환 검수로 유지한다. 유형과 상중하 우선순위 기능은 모든 화면에서 제거하고 기존 kind·priority는 자료·API·재생 호환으로만 검수한다. V-12의 구현 기준과 회귀 검수 연결은 아래와 같으며 실제 실행 결과는 검증 기록에서 별도로 관리한다. 같은 날의 후속 사용자 요청은 V-13으로 연결하여 왼쪽 할 일·오른쪽 날짜별 자유 기록을 첫 기능에 확장한다. 후속 V-14는 왼쪽 06:00~24:00의 36칸 일정을 검수한다. 전체 일기·회고·일정 요구를 완료 처리하지 않는다.
 
 | 검증 ID | 수용 시나리오 | 관련 요구 | 검증 수준 |
 |---|---|---|---|
-| V-01 | 목표 없이 과제 입력과 입력함 저장 | FR-01-02, FR-02-03 | 통합·E2E |
+| V-01 | 목표 없는 과제 생성·날짜 생략 API의 입력함 호환 | FR-01-02, FR-02-03 | 통합·E2E |
 | V-02 | 빈 제목·길이·정규화 | FR-02-02, Q-001 | 단위·계약 |
 | V-03 | 중복 생성과 동시 요청 | FR-02-04 | 통합 |
-| V-04 | 오늘 지정·완료·원본 공유 | FR-04-02, FR-04-05, FR-05-05 | 통합·E2E |
+| V-04 | 날짜 배정·완료·원본 공유와 실제 완료일 기록 | FR-04-02, FR-04-05, FR-05-05 | 통합·E2E |
 | V-05 | 저장 실패와 불확실 응답 재시도 | FR-02-05 | 통합·E2E |
 | V-06 | 비로그인·타인 항목 격리 | FR-01-03, NFR-05 | 통합·보안 |
 | V-07 | 재생 키 만료·본문 충돌·트랜잭션 실패 | FR-02-04, FR-02-05 | 통합·계약 |
-| V-08 | Google 검증·세션·CSRF·계정 변경 | FR-01, FR-14, NFR-05 | 통합·보안 |
+| V-08 | Google 검증·세션·CSRF·계정 변경·본인 허용 목록과 기존 세션 철회 | D-01, FR-01, FR-14, NFR-05 | 통합·보안 |
 | V-09 | 완료 취소·재완료와 유효 활동 | FR-07-04, Q-002 | 통합·E2E |
 | V-10 | 자정·DST·기기/계정 시간대 차이 | D-05, FR-01-04, FR-06-03 | 단위·통합 |
 | V-11 | 버전 충돌·동일 요청 재전송 | FR-14-03, FR-14-04 | 통합·E2E |
+| V-12 | 다섯 줄 순차 입력·IME·inline 원버전 편집, 사각형 상태 메뉴, 날짜별 드래그 순서·영향 구간 원자성, 모든 상태 5개 제한·날짜 이동 경합·기존 자료 호환 | 최신 사용자 요청(2026-11-07), FR-02-05, FR-07-04, FR-14-03, FR-14-04 | 단위·계약·마이그레이션·통합·E2E |
+| V-13 | 왼쪽 할 일·오른쪽 날짜별 자유 기록, 본문 보존, owner·날짜 격리, 명시적 저장·초안·경고·잠금, 신규 저장 경합·재생·충돌·응답 유실 복구 | 최신 사용자 요청(2026-11-07), FR-02-05, FR-14-03, FR-14-04, NFR-02, NFR-05 | 단위·계약·마이그레이션·통합·E2E |
+| V-14 | 06:00~24:00의 36칸 일정·날짜별 저장, 슬롯 검증·owner 분리·동시 첫 저장·재생·초안·잠금·충돌 복구 | 최신 사용자 요청(2026-11-07), FR-02-05, FR-14-03, FR-14-04, NFR-02, NFR-05 | 단위·계약·마이그레이션·통합·E2E |
+| V-15 | 독립 마감일 편집·마감만 목록·계획 변경 전후/버전 이력, 기존 기록 보존, 원자성·재생·권한·커서·날짜와 화면 복구 | FR-04-02, FR-05-01(마감일 부분), FR-05-02, FR-05-03, FR-12-02, NFR-02, NFR-05 | 계약·마이그레이션·실제 PostgreSQL·E2E |
 
 추가된 Q-001·Q-002·D-05 세부 설계값은 원문 요구의 구체화로 검토한다. 관련 FR 전체를 이 첫 기능만으로 완료 처리하지 않는다. 접근성은 NFR-02를 적용하고 키보드·포커스·알림·360px 레이아웃을 확인한다. 성능과 복원은 원문 NFR-03~06의 시험 조건을 별도로 구성한다.
 
-구조 검사 통과만으로 수용 시나리오를 통과 처리하지 않는다. 부분 실행 범위는 [인증·데이터 검증 기록](../../docs/verification/auth-data-foundation.md)에서 확인한다. 소유자 복합 외래키·요청 키 유일성은 검증했지만 API 조회 격리·재생·동시성은 후속 작업이다.
+실행 범위는 [과제 흐름 검증](../../docs/verification/planner-core.md)에 기록했다. rules.test.ts는 V-02·V-10, product-api.test.ts는 V-01~V-04·V-06~V-07·V-09~V-11, auth-database.test.ts는 합성 V-08을 검증한다. planner.spec.ts는 입력·오늘·완료 취소·응답 유실·24시간 제한·계정 전환·충돌 선택을 확인한다. Gherkin은 검토 가능한 시나리오이며 별도의 Cucumber 실행기를 사용했다는 주장은 하지 않는다.
+
+V-12는 다음 테스트와 연결한다. 기존 검증 그룹을 대체하지 않고 저장 실패(V-05), 완료 활동(V-09), 버전·재생(V-07·V-11)의 확장 사례로 함께 검토한다.
+
+| V-12 검수 범위 | 구현·검증 연결 |
+|---|---|
+| high·medium·low 검증, 상태 전환·목록 필터·입력함 복귀·동일 값·재생, 내부 kind의 기존 API 계약 보존 | `src/domain/task-options.ts`, `src/server/product/tasks.ts`, `contracts/openapi.json`, `tests/unit/product-api.test.ts` |
+| 기존 DB 항목에 medium·task 추가, 제목·실행일·상태·버전 보존과 새 제약 | `migrations/0002_task_priority_kind_and_status.sql`, `tests/unit/task-options-migration.test.ts` |
+| v1 체험 자료 보존, 성공한 저장에서만 스키마 변경, 실패 보존, API와 같은 입력함·상태 규칙 | `src/app/demo/transport.ts`, `tests/unit/demo-transport.test.ts` |
+| 고정 다섯 줄·첫 빈 줄 순차 활성화·Enter/Tab/blur/행 저장·IME, inline 원버전 충돌·다른 변경 잠금·계정/날짜 보호 | `src/app/daily-tasks.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 사각형 상태 메뉴·□/✓/→/×·Escape/키보드/터치, 드래그/키보드 이동·취소·포커스 복원·새로고침, priority·kind 화면 제거와 내부 보존 | `src/app/daily-tasks.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| dailyOrder 양수/null backfill, 원본·버전·초과 자료 보존, day 정렬·새 커서, 날짜 이동 끝 배치 | `migrations/0005_task_daily_order.sql`, `src/server/db/schema.ts`, `tests/unit/task-order-migration.test.ts`, `src/server/product/tasks.ts`, `tests/unit/product-api.test.ts` |
+| 단독 moveTo와 move 호환 검증·소유권·If-Match·구간 버전/활동의 원자성·자기 대상 no-op·동일 키 재생·경합·롤백 | `src/domain/task-order.ts`, `src/server/product/tasks.ts`, `contracts/openapi.json`, `tests/unit/product-api.test.ts`, `tests/unit/demo-transport.test.ts` |
+
+새 필드를 생략한 기존 요청의 해시를 유지하고, 과거 응답을 재생할 때만 누락된 기본값을 보충한다. priority·kind는 현재 화면 기능이 아니며 기존 DB·브라우저 자료와 API·재시도의 호환을 위해 보존한다. V-12의 순서 스키마는 0005로 추가했고 현재 드래그 계약은 API 0.9로 확장하며 기존 유형·우선순위 값을 다시 쓰지 않는다. V-13 자유 기록은 0003, V-14 일정은 0004로 확장하며 현재 계약은 API 0.9이다. 하루 5개 한도·view=day와 dailyOrder·move는 V-12의 추가 계약이다. 기존 자료 전체의 정리 상태도 일괄 보정하지 않는다. 구조 검사 `check:spec`의 통과는 V-12 제품 동작이나 실제 OAuth 검증 통과를 뜻하지 않는다.
+
+
+## V-13 자유 기록 검수 연결
+
+| V-13 검수 범위 | 구현·검증 연결 |
+|---|---|
+| 일반 텍스트 10,000 코드 포인트, CRLF→LF, NUL 거부, 공백·빈 줄·빈 글 보존 | `src/domain/journal.ts`, `tests/unit/product-api.test.ts`, `tests/unit/demo-transport.test.ts` |
+| 없는 날짜 v0, owner·날짜 분리, Origin·CSRF·If-Match, 동일 본문 no-op, 요청 크기 제한 | `src/app/api/journal/[date]/route.ts`, `src/server/product/journal.ts`, `contracts/openapi.json`, `tests/unit/product-api.test.ts` |
+| owner·날짜 복합키, 기존 자료 보존, 원자적 최초 저장·두 v0 경합·동일 키 재생·롤백·잠금 제한 | `migrations/0003_daily_journal.sql`, `src/server/db/schema.ts`, `src/server/product/journal.ts`, `tests/unit/product-api.test.ts`, `tests/unit/auth-database.test.ts` |
+| 왼쪽 상단 하루 할 일·일정표·접힌 이전 기록, 오른쪽 자유 기록, 날짜별 본문·초안·명시적 저장·공백/줄바꿈·새로고침 | `src/app/planner.tsx`, `src/app/journal-editor.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 다른 날짜의 초안까지 이탈 경고, 계정 변경 폐기·일시 401 초안 보존과 복구, 수정·저장·pending의 상호 잠금 | `src/app/planner.tsx`, `src/app/journal-editor.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 성공 응답 유실 후 같은 키와 version 재생, 412에서 두 선택, 과거 날짜 지연 응답 격리 | `src/app/journal-editor.tsx`, `tests/e2e/planner.spec.ts` |
+| 24시간 후 재전송 차단과 GET 확인, 저장된 글 불일치 비교, 조회 실패 복구 | `src/app/journal-editor.tsx`, `acceptance.feature`의 V-13·V-05·V-07·V-11 시나리오와 추가 검수 |
+| 기존 체험 자료와 저장 실패 보존, 날짜별 저장·복원, 제품 API·쿠키와 분리 | `src/app/demo/transport.ts`, `tests/unit/demo-transport.test.ts`, `tests/e2e/demo.spec.ts` |
+
+V-13의 테스트 연결은 검증 범위를 명시하며 통과 결과를 대신하지 않는다. 실제 PostgreSQL의 advisory lock·신규 삽입 경합은 해당 환경에서 확인하고, 메모리 DB 결과로 대신 통과 처리하지 않는다. 브라우저는 데스크톱·360px 모바일에서 저장과 실패 복구를 확인한다. `check:spec`는 API 참조와 V-13 태그 연결의 구조 검사이며 사용자 수용 승인·실제 OAuth·운영 배포 준비를 뜻하지 않는다.
+
+
+## V-12 한도·순서 확장과 V-14 일정 검수 연결
+
+| 검수 범위 | 구현·검증 연결 |
+|---|---|
+| 선택 날짜 직접 생성, 기존 날짜 없는 API 생성·scheduled 호환, day 전체 상태 조회 | `src/app/planner.tsx`, `src/server/product/tasks.ts`, `contracts/openapi.json`, `tests/unit/product-api.test.ts`, `tests/e2e/planner.spec.ts` |
+| 완료·취소 포함 5개, 여섯 번째 거부, 날짜 이동 후 자리 확보·대상 날짜 제한, 생성·이동 동시 경합과 롤백, 기존 5개 초과 보존 | `src/server/product/tasks.ts`, `src/server/product/date-lock.ts`, `tests/unit/product-api.test.ts`, `tests/unit/demo-transport.test.ts`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 36칸·360~1410·30분 배수·중복·정렬·NFC 제목·빈 배열 검증 | `src/domain/schedule.ts`, `tests/unit/schedule.test.ts`, `contracts/openapi.json` |
+| schedule_entries와 기존 자료 보존·DB 제약 | `migrations/0004_daily_schedule.sql`, `src/server/db/schema.ts`, `tests/unit/schedule-migration.test.ts` |
+| owner·날짜 분리, v0·no-op·조건부 쓰기·최초 저장 경합·재생·412·롤백 | `src/app/api/schedule/[date]/route.ts`, `src/server/product/schedule.ts`, `tests/unit/product-api.test.ts` |
+| 4칸×9페이지의 36개 입력 이름·첫/마지막 행·날짜별 저장/초안·페이지 왕복·새로고침·외부 스크롤/잘림 | `src/app/schedule-editor.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 일정 응답 유실 후 같은 키/version 재생, 412 두 선택, 계정 전환 초안 폐기, 할 일 수정 중 잠금 | `src/app/schedule-editor.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 체험 일정 저장과 API 미호출, 기존 저장 자료·저장 실패 보존 | `src/app/demo/transport.ts`, `tests/unit/demo-transport.test.ts`, `tests/e2e/demo.spec.ts` |
+
+반복·기간 이벤트·외부 캘린더 동기화는 V-14에 포함하지 않는다. API 0.9의 moveTo는 기존 9개 테이블·6개 마이그레이션·11개 제품 API 작업을 유지하며, 구조 검사만으로 실제 PostgreSQL 경합·브라우저·사용자 수용 검수를 완료 처리하지 않는다. 새 검증 결과는 진행 현황과 검증 기록에서 별도로 확정한다.
+
+
+## 날짜 선택·화면 높이 검수 연결
+
+V-04·V-10은 항상 보이는 `날짜 선택`과 월 탐색·오늘 선택을, V-12·V-13·V-14는 선택 날짜의 세 영역 동기화를 함께 검수한다. NFR-02에는 날짜 수와 패널 폭을 구별한 접근 가능한 책 페이지 탭, 키보드 드래그 대안, 다이얼로그 포커스 복원과 PC·태블릿 방향·휴대폰별 외부 스크롤 및 콘텐츠 잘림 검사를 연결한다.
+
+| 검수 범위 | 구현·검증 연결 |
+|---|---|
+| 상단 날짜 버튼·달력 대화상자·월만 탐색·날짜 선택과 세 영역 동기화 | `src/app/diary-calendar.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 마우스/실제 touch 포인터 이동·키보드 확정/취소·장거리 이동·새로고침 | `src/app/daily-tasks.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 외부 문서 스크롤 없음·5줄/4칸/저장 버튼 표시·날짜 패널별 내부 탭·날짜 대화상자 표시 | `src/app/globals.css`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+
+전체 자동 검사와 실제 사용자 수용·수동 보조기술 검수 결과는 구별하며 최신 실행 증거는 검증 기록에서 확정한다.
+
+## V-15 마감일과 계획 이력 검수 연결 (spec 0.11)
+
+| 검수 범위 | 구현·검증 연결 |
+|---|---|
+| dueDate 생성/수정/null, 달력 날짜·독립성·동일 값·기존 요청 해시 호환 | `src/server/product/tasks.ts`, `contracts/openapi.json`, `tests/unit/product-api.test.ts`, `tests/unit/demo-transport.test.ts` |
+| view=due의 상태·실행일 중복 제외·날짜/owner·페이지 분리, 다섯 줄 한도 독립 | `src/server/product/tasks.ts`, `src/app/planner-day.tsx`, `tests/unit/product-api.test.ts`, `tests/e2e/planner.spec.ts` |
+| created/날짜/상태/순서 before/after/version, 완료 시점의 원래 계획, 무효화 연결 | `src/domain/task-history.ts`, `src/server/product/tasks.ts`, `src/server/db/schema.ts`, `tests/unit/product-api.test.ts` |
+| details 추가·기존 활동 null 보존·JSON 제약·과제/활동/재생 원자성 | `migrations/0006_task_plan_history.sql`, `src/server/db/schema.ts`, `tests/unit/product-api.test.ts`, `tests/unit/task-history-migration.test.ts` |
+| 소유 과제 활동 GET·조회 무변경·서명 커서 범위·누락과 타인 동일 404, 활동 및 due/day/completed 마이크로초 커서·이전 커서 호환 | `src/app/api/tasks/[taskId]/activities/route.ts`, `src/server/product/tasks.ts`, `tests/unit/product-api.test.ts` |
+| 실행일/마감일 폼·충돌 비교·계획 이력·재시도·지연 응답 격리·화면 높이/키보드 | `src/app/planner-day.tsx`, `src/app/daily-tasks.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 체험 자료 호환과 이력, 제품 API 미호출·저장 실패 보존 | `src/app/demo/transport.ts`, `tests/unit/demo-transport.test.ts`, `tests/e2e/demo.spec.ts` |
+
+이전 다음 작업 안내의 FR-12-03은 잘못된 연결이었다. 날짜 변경의 원본·이력은 FR-12-02에 연결하고 FR-12-03 회고 중단/재개는 미구현으로 유지한다. FR-05-01 전체 요구와 FR-12 기본 회고 기능을 이번 부분 기능만으로 완료 처리하지 않는다. 실행 결과는 [마감일·이력 검증](../../docs/verification/deadline-history.md)에서 별도로 확정한다.
+
+
+## spec 0.9 두 날짜 화면 검수 연결 (2026-11-09)
+
+V-12·V-13·V-14의 날짜 격리를 primary·secondary 패널에 함께 적용한다. V-05·V-11은 한 날짜로 회전했을 때 pending·충돌 복구 표시를, V-10은 날짜 범위·자정·9999 상한을 검수한다. API 0.9·9개 테이블·6개 마이그레이션은 유지한다.
+
+| 검수 범위 | 구현·검증 연결 |
+|---|---|
+| 두 날짜의 할 일·일정·자유 기록 독립 저장과 다른 날짜 쓰기 잠금 | `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 포인터/폭/높이/방향별 날짜 수, PC·가로/세로 태블릿·휴대폰 캡처 | `src/app/globals.css`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 날짜를 키로 한 캐시·회전/다른 날짜 보기/범위 이동 초안 보존 | `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| secondary 불확실 글 저장의 자동 표시·같은 키 재생·version 유지 | `src/app/planner.tsx`, `src/app/journal-editor.tsx`, `tests/e2e/planner.spec.ts` |
+| 숨긴 날짜 포함 ID 유일성·label/설명 대상, 범위 상한에서 안전한 한 날짜 | `src/app/daily-tasks.tsx`, `src/app/journal-editor.tsx`, `src/app/schedule-editor.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+
+브라우저 시나리오는 화면 수용 조건과 연결한 것이며 실제 실행 통과 결과는 별도 검증 기록에서 확정한다.

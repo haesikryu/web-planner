@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 
 test("foundation page is accessible and does not pretend authentication is ready", async ({ page }) => {
   await page.goto("/");
@@ -30,6 +31,7 @@ test("anonymous product session returns a private contract error", async ({ requ
 });
 
 test("library bypass routes are unavailable and missing OAuth setup fails safely", async ({ request }) => {
+  expect((await request.get("/demo")).status()).toBe(404);
   expect((await request.get("/api/auth/get-session")).status()).toBe(404);
   const response = await request.post("/api/auth/sign-in/social", {
     headers: { Origin: "http://127.0.0.1:3100" }, data: { provider: "google" }
@@ -38,4 +40,10 @@ test("library bypass routes are unavailable and missing OAuth setup fails safely
   const body = await response.json();
   expect(body.code).toBe("AUTH_UNAVAILABLE");
   expect(JSON.stringify(body)).not.toMatch(/DATABASE_URL|GOOGLE_CLIENT_SECRET|BETTER_AUTH_SECRET|postgresql:/);
+});
+
+test("public landing page meets automated WCAG A/AA checks", async ({ page }) => {
+  await page.goto("/");
+  const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(result.violations).toEqual([]);
 });
