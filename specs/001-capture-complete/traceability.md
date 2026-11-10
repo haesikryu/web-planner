@@ -24,6 +24,7 @@ FR-05-02는 product-api.test.ts의 `preserves an existing deadline when reschedu
 | V-12 | 다섯 줄 순차 입력·IME·inline 원버전 편집, 사각형 상태 메뉴, 날짜별 드래그 순서·영향 구간 원자성, 모든 상태 5개 제한·날짜 이동 경합·기존 자료 호환 | 최신 사용자 요청(2026-11-07), FR-02-05, FR-07-04, FR-14-03, FR-14-04 | 단위·계약·마이그레이션·통합·E2E |
 | V-13 | 왼쪽 할 일·오른쪽 날짜별 자유 기록, 본문 보존, owner·날짜 격리, 명시적 저장·초안·경고·잠금, 신규 저장 경합·재생·충돌·응답 유실 복구 | 최신 사용자 요청(2026-11-07), FR-02-05, FR-14-03, FR-14-04, NFR-02, NFR-05 | 단위·계약·마이그레이션·통합·E2E |
 | V-14 | 06:00~24:00의 36칸 일정·날짜별 저장, 슬롯 검증·owner 분리·동시 첫 저장·재생·초안·잠금·충돌 복구 | 최신 사용자 요청(2026-11-07), FR-02-05, FR-14-03, FR-14-04, NFR-02, NFR-05 | 단위·계약·마이그레이션·통합·E2E |
+| V-15 | 독립 마감일 편집·마감만 목록·계획 변경 전후/버전 이력, 기존 기록 보존, 원자성·재생·권한·커서·날짜와 화면 복구 | FR-04-02, FR-05-01(마감일 부분), FR-05-02, FR-05-03, FR-12-02, NFR-02, NFR-05 | 계약·마이그레이션·실제 PostgreSQL·E2E |
 
 추가된 Q-001·Q-002·D-05 세부 설계값은 원문 요구의 구체화로 검토한다. 관련 FR 전체를 이 첫 기능만으로 완료 처리하지 않는다. 접근성은 NFR-02를 적용하고 키보드·포커스·알림·360px 레이아웃을 확인한다. 성능과 복원은 원문 NFR-03~06의 시험 조건을 별도로 구성한다.
 
@@ -87,6 +88,20 @@ V-04·V-10은 항상 보이는 `날짜 선택`과 월 탐색·오늘 선택을, 
 | 외부 문서 스크롤 없음·5줄/4칸/저장 버튼 표시·날짜 패널별 내부 탭·날짜 대화상자 표시 | `src/app/globals.css`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
 
 전체 자동 검사와 실제 사용자 수용·수동 보조기술 검수 결과는 구별하며 최신 실행 증거는 검증 기록에서 확정한다.
+
+## V-15 마감일과 계획 이력 검수 연결 (spec 0.11)
+
+| 검수 범위 | 구현·검증 연결 |
+|---|---|
+| dueDate 생성/수정/null, 달력 날짜·독립성·동일 값·기존 요청 해시 호환 | `src/server/product/tasks.ts`, `contracts/openapi.json`, `tests/unit/product-api.test.ts`, `tests/unit/demo-transport.test.ts` |
+| view=due의 상태·실행일 중복 제외·날짜/owner·페이지 분리, 다섯 줄 한도 독립 | `src/server/product/tasks.ts`, `src/app/planner-day.tsx`, `tests/unit/product-api.test.ts`, `tests/e2e/planner.spec.ts` |
+| created/날짜/상태/순서 before/after/version, 완료 시점의 원래 계획, 무효화 연결 | `src/domain/task-history.ts`, `src/server/product/tasks.ts`, `src/server/db/schema.ts`, `tests/unit/product-api.test.ts` |
+| details 추가·기존 활동 null 보존·JSON 제약·과제/활동/재생 원자성 | `migrations/0006_task_plan_history.sql`, `src/server/db/schema.ts`, `tests/unit/product-api.test.ts`, `tests/unit/task-history-migration.test.ts` |
+| 소유 과제 활동 GET·조회 무변경·서명 커서 범위·누락과 타인 동일 404, 활동 및 due/day/completed 마이크로초 커서·이전 커서 호환 | `src/app/api/tasks/[taskId]/activities/route.ts`, `src/server/product/tasks.ts`, `tests/unit/product-api.test.ts` |
+| 실행일/마감일 폼·충돌 비교·계획 이력·재시도·지연 응답 격리·화면 높이/키보드 | `src/app/planner-day.tsx`, `src/app/daily-tasks.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 체험 자료 호환과 이력, 제품 API 미호출·저장 실패 보존 | `src/app/demo/transport.ts`, `tests/unit/demo-transport.test.ts`, `tests/e2e/demo.spec.ts` |
+
+이전 다음 작업 안내의 FR-12-03은 잘못된 연결이었다. 날짜 변경의 원본·이력은 FR-12-02에 연결하고 FR-12-03 회고 중단/재개는 미구현으로 유지한다. FR-05-01 전체 요구와 FR-12 기본 회고 기능을 이번 부분 기능만으로 완료 처리하지 않는다. 실행 결과는 [마감일·이력 검증](../../docs/verification/deadline-history.md)에서 별도로 확정한다.
 
 
 ## spec 0.9 두 날짜 화면 검수 연결 (2026-11-09)

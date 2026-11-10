@@ -166,6 +166,136 @@ async function createStoredTask(page: Page, title: string, fields: Record<string
 }
 test.beforeEach(async ({ context }) => seedSession(context));
 
+test("deadline-only tasks stay separate and plan history preserves future plans through completion", async ({ page }) => {
+  test.setTimeout(60_000);
+  const session = await (await page.request.get("/api/session")).json();
+  const today = session.serverDate, future = Temporal.PlainDate.from(today).add({ days: 3 }).toString();
+  const task = await createStoredTask(page, "마감과 실행 분리", { scheduledDate: future, dueDate: today, isUnprocessed: false });
+  await page.goto("/");
+  const due = primary(page).locator(".due-tasks");
+  await expect(due.locator("summary")).toContainText("1");
+  await expect(primary(page).locator(".daily-task-row[data-task-id]")).toHaveCount(0);
+  await due.locator("summary").click();
+  const card = due.locator(`[data-task-id="${task.id}"]`);
+  await expect(card).toContainText(`실행일 ${future} · 마감일 ${today}`);
+  await card.getByRole("button", { name: "수정", exact: true }).click();
+  const editor = primary(page).locator(".edit-panel");
+  await expect(editor.getByLabel("실행 예정일", { exact: true })).toHaveValue(future);
+  await expect(editor.getByLabel("마감일", { exact: true })).toHaveValue(today);
+  await editor.getByLabel("마감일", { exact: true }).fill("");
+  await editor.getByRole("button", { name: "변경 저장", exact: true }).click();
+  await expect(editor).toBeHidden();
+  await expect(due.locator("summary")).toContainText("0");
+  expect(await (await page.request.get(`/api/tasks/${task.id}`)).json()).toMatchObject({ scheduledDate: future, dueDate: null });
+  await pickDate(page, future);
+  await dailyRow(page, task.title).getByRole("button", { name: `${task.title} 수정`, exact: true }).click();
+  await editor.getByLabel("마감일", { exact: true }).fill(today);
+  await editor.getByRole("button", { name: "변경 저장", exact: true }).click();
+  await expect(editor).toBeHidden();
+  await setDailyStatus(page, task.title, "완료");
+  await expect(dailyRow(page, task.title).locator(".bullet-symbol")).toHaveText("✓");
+  await pickDate(page, today); await openHistory(page);
+  const completed = primary(page).getByRole("region", { name: "오늘 완료", exact: true }).locator(`[data-task-id="${task.id}"]`);
+  await completed.getByRole("button", { name: "수정", exact: true }).click();
+  await editor.getByRole("button", { name: "계획 변경 이력", exact: true }).click();
+  const history = editor.getByRole("region", { name: "계획 변경 이력", exact: true });
+  await expect(history.locator("[data-activity-id]")).toHaveCount(4);
+  await expect(history).toContainText(`완료 당시 실행일: ${future}`);
+  await expect(history).toContainText(`마감일: ${today} → 없음`);
+  await expect(history).toContainText(`마감일: 없음 → ${today}`);
+  expect((await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze()).violations).toEqual([]);
+  await expectViewport(page);
+  await editor.getByRole("button", { name: "수정 닫기", exact: true }).click();
+  await page.reload(); await openHistory(page);
+  await expect(primary(page).getByRole("region", { name: "오늘 완료", exact: true })).toContainText(task.title);
+});
+
+test("deadline conflict and lost response preserve date drafts and avoid duplicate history", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto("/"); await addDaily(page, "마감 충돌 복구");
+  const row = dailyRow(page, "마감 충돌 복구"), id = await row.getAttribute("data-task-id");
+  const session = await (await page.request.get("/api/session")).json();
+  const mine = Temporal.PlainDate.from(session.serverDate).add({ days: 2 }).toString();
+  const remoteDate = Temporal.PlainDate.from(session.serverDate).add({ days: 1 }).toString();
+  await row.getByRole("button", { name: "마감 충돌 복구 수정", exact: true }).click();
+  const editor = primary(page).locator(".edit-panel");
+  await editor.getByLabel("마감일", { exact: true }).fill(mine);
+  const remote = await page.request.patch(`/api/tasks/${id}`, { headers: { Origin: "http://127.0.0.1:3101", "X-CSRF-Token": session.csrfToken, "Idempotency-Key": randomUUID(), "If-Match": '"v1"' }, data: { dueDate: remoteDate } });
+  expect(remote.status()).toBe(200);
+  await editor.getByRole("button", { name: "변경 저장", exact: true }).click();
+  const conflict = primary(page).getByRole("region", { name: "수정 충돌 확인", exact: true });
+  await expect(conflict).toContainText(`마감일: ${remoteDate}`);
+  await expect(conflict).toContainText(`마감일: ${mine}`);
+  await expect(editor.getByLabel("마감일", { exact: true })).toHaveValue(mine);
+  const keys: string[] = []; let loseOnce = true;
+  await page.route(`**/api/tasks/${id}`, async route => {
+    if (route.request().method() === "PATCH") {
+      keys.push(route.request().headers()["idempotency-key"]);
+      if (loseOnce) { loseOnce = false; await route.fetch(); await route.abort("failed"); return; }
+    }
+    await route.continue();
+  });
+  await conflict.getByRole("button", { name: "내 변경 다시 적용", exact: true }).click();
+  await expect(primary(page).getByRole("button", { name: "같은 요청 재시도", exact: true })).toBeVisible();
+  await expect(editor.getByLabel("마감일", { exact: true })).toHaveValue(mine);
+  await primary(page).getByRole("button", { name: "같은 요청 재시도", exact: true }).click();
+  await expect(editor).toBeHidden();
+  expect(keys).toHaveLength(2); expect(keys[0]).toBe(keys[1]);
+  expect(await (await page.request.get(`/api/tasks/${id}`)).json()).toMatchObject({ dueDate: mine, scheduledDate: session.serverDate, version: 3 });
+  const history = await (await page.request.get(`/api/tasks/${id}/activities`)).json();
+  expect(history.items.map((item: { type: string }) => item.type).sort()).toEqual(["created", "due_date_changed", "due_date_changed"]);
+  await expectViewport(page);
+});
+
+test("history retries, paginates and isolates a delayed response after switching tasks", async ({ page }) => {
+  test.setTimeout(60_000);
+  const session = await (await page.request.get("/api/session")).json();
+  const first = await createStoredTask(page, "여러 변경 이력", { scheduledDate: session.serverDate, isUnprocessed: false });
+  const other = await createStoredTask(page, "다른 과제 이력", { scheduledDate: session.serverDate, isUnprocessed: false });
+  for (let version = 1; version <= 51; version++) {
+    const response = await page.request.patch(`/api/tasks/${first.id}`, { headers: { Origin: "http://127.0.0.1:3101", "X-CSRF-Token": session.csrfToken, "Idempotency-Key": randomUUID(), "If-Match": `"v${version}"` }, data: { dueDate: version % 2 ? "2027-01-01" : "2027-01-02" } });
+    expect(response.status()).toBe(200);
+  }
+  let failOnce = true, hold = false;
+  let release!: () => void, requested!: () => void, handled!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const entered = new Promise<void>(resolve => { requested = resolve; });
+  const finished = new Promise<void>(resolve => { handled = resolve; });
+  await page.route(`**/api/tasks/${first.id}/activities?*`, async route => {
+    if (failOnce) { failOnce = false; await route.abort("failed"); return; }
+    if (hold) {
+      const response = await route.fetch(); requested(); await held;
+      try { await route.fulfill({ response }); } catch { /* Unmounted history cancels this request. */ } finally { handled(); }
+      return;
+    }
+    await route.continue();
+  });
+  await page.goto("/");
+  await dailyRow(page, first.title).getByRole("button", { name: `${first.title} 수정`, exact: true }).click();
+  const editor = primary(page).locator(".edit-panel"), history = editor.getByRole("region", { name: "계획 변경 이력", exact: true });
+  await editor.getByRole("button", { name: "계획 변경 이력", exact: true }).click();
+  await history.getByRole("button", { name: "이력 다시 불러오기", exact: true }).click();
+  await expect(history.locator("[data-activity-id]")).toHaveCount(50);
+  await history.getByRole("button", { name: "이력 더 보기", exact: true }).click();
+  await expect(history.locator("[data-activity-id]")).toHaveCount(52);
+  const ids = await history.locator("[data-activity-id]").evaluateAll(elements => elements.map(element => element.getAttribute("data-activity-id")));
+  expect(new Set(ids).size).toBe(52);
+  await editor.getByRole("button", { name: "수정 닫기", exact: true }).click();
+  hold = true;
+  await dailyRow(page, first.title).getByRole("button", { name: `${first.title} 수정`, exact: true }).click();
+  await editor.getByRole("button", { name: "계획 변경 이력", exact: true }).click();
+  await entered;
+  await editor.getByRole("button", { name: "수정 닫기", exact: true }).click();
+  await dailyRow(page, other.title).getByRole("button", { name: `${other.title} 수정`, exact: true }).click();
+  await editor.getByRole("button", { name: "계획 변경 이력", exact: true }).click();
+  await expect(history.locator("[data-activity-id]")).toHaveCount(1);
+  release(); await finished;
+  await expect(editor.getByLabel("제목", { exact: true })).toHaveValue(other.title);
+  await expect(history.locator("[data-activity-id]")).toHaveCount(1);
+  await expect(history).not.toContainText("2027-01-01");
+  await expectViewport(page);
+});
+
 test("keyboard-only daily workflow reaches inputs, ordering, status, calendar and saved records", async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto("/");
@@ -675,7 +805,7 @@ test("an unscheduled organized completion returns to inbox after cancellation or
   await doneCard.getByLabel("날짜 없는 기록 상태", { exact: true }).selectOption("canceled");
   await expect(inboxCard.locator(".bullet-symbol")).toHaveText("×");
   await expect(inboxCard).toHaveAttribute("data-task-id", id ?? "");
-  await expect(inboxCard).toContainText("날짜 미정");
+  await expect(inboxCard).toContainText("실행일 미정 · 마감일 없음");
   await expect(doneCard).toHaveCount(0);
   await page.reload();
   await openHistory(page);
@@ -691,7 +821,7 @@ test("an unscheduled organized completion returns to inbox after cancellation or
   await page.reload();
   await openHistory(page);
   await expect(inboxCard.getByLabel("날짜 없는 기록 상태", { exact: true })).toHaveValue("open");
-  await expect(inboxCard).toContainText("날짜 미정");
+  await expect(inboxCard).toContainText("실행일 미정 · 마감일 없음");
 });
 
 

@@ -22,6 +22,90 @@ function scheduleMutation(slots: unknown, version = 0, requestKey = crypto.rando
 }
 
 describe("browser-only demo transport", () => {
+  it("keeps execution and deadline independent and excludes same-day or inactive tasks from deadline-only results", async () => {
+    const storage = memoryStorage(), demo = createDemoTransport(storage);
+    const created = await demo.request("/api/tasks", mutation("POST", { title: "마감만", dueDate: "2026-11-10" }));
+    const task = await created.json();
+    expect(task).toMatchObject({ scheduledDate: null, dueDate: "2026-11-10" });
+    for (const fields of [{ title: "실행도", scheduledDate: "2026-11-10" }, { title: "완료" }, { title: "취소" }]) {
+      const item = await (await demo.request("/api/tasks", mutation("POST", { ...fields, dueDate: "2026-11-10" }))).json();
+      if (fields.title !== "실행도") await demo.request(`/api/tasks/${item.id}`, mutation("PATCH", { status: fields.title === "완료" ? "completed" : "canceled" }, 1));
+    }
+    expect((await (await demo.request("/api/tasks?view=due&date=2026-11-10")).json()).items.map((item: { id: string }) => item.id)).toEqual([task.id]);
+    const changed = await (await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { scheduledDate: "2026-11-12" }, 1))).json();
+    expect(changed).toMatchObject({ scheduledDate: "2026-11-12", dueDate: "2026-11-10", version: 2 });
+    const cleared = await (await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { dueDate: null }, 2))).json();
+    expect(cleared).toMatchObject({ scheduledDate: "2026-11-12", dueDate: null, version: 3 });
+    const before = storage.getItem(key);
+    for (const dueDate of ["2026-02-29", "0000-01-01", "2026-1-1", false]) expect((await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { dueDate }, 3))).status).toBe(422);
+    expect(storage.getItem(key)).toBe(before);
+  });
+
+  it("stores original plans and completion invalidation atomically without replay or no-op duplicates", async () => {
+    const storage = memoryStorage();
+    let clock = new Date("2026-11-10T00:00:00.000Z");
+    const demo = createDemoTransport(storage, () => clock);
+    const task = await (await demo.request("/api/tasks", mutation("POST", { title: "원래 계획", scheduledDate: "2026-11-20", dueDate: "2026-11-22" }))).json();
+    const change = mutation("PATCH", { scheduledDate: "2026-11-21", dueDate: "2026-11-23", status: "completed" }, 1);
+    clock = new Date("2026-11-10T00:01:00.000Z");
+    expect((await demo.request(`/api/tasks/${task.id}`, change)).status).toBe(200);
+    const after = storage.getItem(key);
+    const firstHistory = await (await demo.request(`/api/tasks/${task.id}/activities`)).json();
+    expect(firstHistory.items).toHaveLength(4);
+    expect(firstHistory.items.filter((item: { type: string }) => item.type !== "created")).toEqual(expect.arrayContaining([expect.objectContaining({ details: { before: { scheduledDate: "2026-11-20", dueDate: "2026-11-22", status: "open", dailyOrder: 1 }, after: { scheduledDate: "2026-11-21", dueDate: "2026-11-23", status: "completed", dailyOrder: 1 }, version: 2 } })]));
+    expect((await demo.request(`/api/tasks/${task.id}`, change)).status).toBe(200);
+    expect(storage.getItem(key)).toBe(after);
+    await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { dueDate: "2026-11-23" }, 2));
+    expect((await (await demo.request(`/api/tasks/${task.id}/activities`)).json()).items).toEqual(firstHistory.items);
+    const beforeFailure = storage.getItem(key), restore = mutation("PATCH", { status: "open" }, 2);
+    const setter = vi.spyOn(storage, "setItem").mockImplementation(() => { throw new Error("Quota exceeded"); });
+    expect((await demo.request(`/api/tasks/${task.id}`, restore)).status).toBe(500);
+    expect(storage.getItem(key)).toBe(beforeFailure); setter.mockRestore();
+    expect((await demo.request(`/api/tasks/${task.id}`, restore)).status).toBe(200);
+    const final = await (await createDemoTransport(storage).request(`/api/tasks/${task.id}/activities`)).json();
+    const undo = final.items.find((item: { type: string }) => item.type === "completion_undone");
+    expect(final.items.find((item: { type: string }) => item.type === "completed").invalidatedBy).toBe(undo.id);
+    expect(undo.details.after).toMatchObject({ scheduledDate: "2026-11-21", dueDate: "2026-11-23", status: "open" });
+  });
+
+  it("paginates equal-time history without duplicate events and rejects cross-task cursors", async () => {
+    const demo = createDemoTransport(memoryStorage(), () => new Date("2026-11-10T00:00:00.000Z"));
+    const task = await (await demo.request("/api/tasks", mutation("POST", { title: "이력" }))).json();
+    for (let version = 1; version <= 4; version++) await demo.request(`/api/tasks/${task.id}`, mutation("PATCH", { dueDate: `2026-11-${10 + version}` }, version));
+    const other = await (await demo.request("/api/tasks", mutation("POST", { title: "다른 항목" }))).json();
+    let cursor: string | null = null; const ids: string[] = [];
+    do {
+      const page = await (await demo.request(`/api/tasks/${task.id}/activities?limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)).json();
+      ids.push(...page.items.map((item: { id: string }) => item.id)); cursor = page.nextCursor;
+      if (cursor) expect((await demo.request(`/api/tasks/${other.id}/activities?limit=2&cursor=${encodeURIComponent(cursor)}`)).status).toBe(400);
+    } while (cursor);
+    expect(ids).toHaveLength(5); expect(new Set(ids).size).toBe(5);
+    expect(ids).toEqual([...ids].sort());
+    for (const query of ["limit=0", "limit=101", "limit=2&limit=3", "owner=forged"]) expect((await demo.request(`/api/tasks/${task.id}/activities?${query}`)).status).toBe(422);
+  });
+
+  it("upgrades v5 dates and replay lazily without fabricating history and refuses damaged v6 histories", async () => {
+    const storage = memoryStorage(), demo = createDemoTransport(storage);
+    const create = mutation("POST", { title: "기존 자료" });
+    const task = await (await demo.request("/api/tasks", create)).json();
+    const legacy = JSON.parse(storage.getItem(key) ?? "{}"); legacy.schemaVersion = 5;
+    delete legacy.tasks[0].dueDate; delete legacy.taskRequests[0].response.dueDate; delete legacy.activities;
+    const original = JSON.stringify(legacy); storage.setItem(key, original);
+    const migrated = createDemoTransport(storage);
+    expect((await (await migrated.request(`/api/tasks/${task.id}/activities`)).json()).items).toEqual([]);
+    expect(await (await migrated.request("/api/tasks", create)).json()).toMatchObject({ id: task.id, dueDate: null, version: 1 });
+    expect(storage.getItem(key)).toBe(original);
+    await migrated.request(`/api/tasks/${task.id}`, mutation("PATCH", { dueDate: "2026-11-11" }, 1));
+    const valid = JSON.parse(storage.getItem(key) ?? "{}");
+    expect(valid.schemaVersion).toBe(6); expect(valid.activities).toHaveLength(1);
+    expect(valid.activities[0].details.before.dueDate).toBeNull();
+    for (const activities of [null, [{ ...valid.activities[0], taskId: crypto.randomUUID() }], [{ ...valid.activities[0], details: { ...valid.activities[0].details, before: null } }],
+      [{ ...valid.activities[0], occurredAt: "2026-11-10" }], [{ ...valid.activities[0], details: null }], [{ ...valid.activities[0], details: { ...valid.activities[0].details, version: 1 } }]]) {
+      const damaged = JSON.stringify({ ...valid, activities }); storage.setItem(key, damaged);
+      expect(() => createDemoTransport(storage)).toThrow("손상"); expect(storage.getItem(key)).toBe(damaged);
+    }
+  });
+
   it("starts empty and preserves normalized tasks and settings across recreation", async () => {
     const storage = memoryStorage();
     const demo = createDemoTransport(storage);
@@ -54,7 +138,7 @@ describe("browser-only demo transport", () => {
     expect(storage.getItem(key)).toBe(legacy);
     setter.mockRestore();
     expect((await demo.request(`/api/tasks/${legacyTask.id}`, mutation("PATCH", { priority: "high", kind: "event" }, 4))).status).toBe(200);
-    expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(5);
+    expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(6);
     const restored = createDemoTransport(storage);
     expect(await (await restored.request(`/api/tasks/${legacyTask.id}`)).json()).toMatchObject({ ...legacyTask, priority: "high", kind: "event", version: 5, updatedAt: expect.any(String) });
   });
@@ -315,7 +399,7 @@ describe("browser-only demo transport", () => {
       expect(storage.getItem(key)).toBe(legacy);
       expect((await demo.request("/api/journal/2026-11-07", journalMutation("새로운 다이어리"))).status).toBe(200);
       const restored = createDemoTransport(storage);
-      expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(5);
+      expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(6);
       expect(restored.initialSession.settingsVersion).toBe(2);
       expect(await (await restored.request(`/api/tasks/${task.id}`)).json()).toEqual(task);
       expect(await (await restored.request("/api/journal/2026-11-07")).json()).toMatchObject({ content: "새로운 다이어리", version: 1 });
@@ -688,21 +772,21 @@ describe("browser-only demo transport", () => {
       expect(await (await demo.request(`/api/tasks/${id(9)}`)).json()).toMatchObject({ dailyOrder: 1 });
       if (schemaVersion === 4) {
         const replay = await demo.request("/api/tasks", mutation("POST", requestInput, undefined, requestKey));
-        expect(replay.status).toBe(201); expect(await replay.json()).toEqual({ ...oldResponse, dailyOrder: null });
+        expect(replay.status).toBe(201); expect(await replay.json()).toEqual({ ...oldResponse, dailyOrder: null, dueDate: null });
       }
       expect(storage.getItem(key)).toBe(raw);
       const move = mutation("PATCH", { move: "down" }, 1), setter = vi.spyOn(storage, "setItem").mockImplementation(() => { throw new Error("Quota exceeded"); });
       expect((await demo.request(`/api/tasks/${id(7)}`, move)).status).toBe(500);
       expect(storage.getItem(key)).toBe(raw); setter.mockRestore();
       expect((await demo.request(`/api/tasks/${id(7)}`, move)).status).toBe(200);
-      const upgraded = storage.getItem(key); expect(JSON.parse(upgraded ?? "{}").schemaVersion).toBe(5);
+      const upgraded = storage.getItem(key); expect(JSON.parse(upgraded ?? "{}").schemaVersion).toBe(6);
       const restored = createDemoTransport(storage, () => instant);
       expect((await (await restored.request("/api/tasks?view=day&date=2026-11-07")).json()).items.map((task: { id: string }) => task.id)).toEqual([id(1), id(7), id(2), id(3), id(4), id(5), id(6)]);
       expect(await (await restored.request(`/api/tasks/${id(1)}`)).json()).toMatchObject({ priority: schemaVersion === 1 ? "medium" : "high", kind: schemaVersion === 1 ? "task" : "event" });
       if (schemaVersion >= 3) expect(await (await restored.request("/api/journal/2026-11-07")).json()).toEqual(legacy.journals[0]);
       if (schemaVersion === 4) {
         expect(await (await restored.request("/api/schedule/2026-11-07")).json()).toEqual(legacy.schedules[0]);
-        expect(await (await restored.request("/api/tasks", mutation("POST", requestInput, undefined, requestKey))).json()).toEqual({ ...oldResponse, dailyOrder: null });
+        expect(await (await restored.request("/api/tasks", mutation("POST", requestInput, undefined, requestKey))).json()).toEqual({ ...oldResponse, dailyOrder: null, dueDate: null });
       }
       expect(storage.getItem(key)).toBe(upgraded);
     }
@@ -849,7 +933,7 @@ describe("browser-only demo transport", () => {
       expect(storage.getItem(key)).toBe(raw); setter.mockRestore();
       expect((await demo.request("/api/schedule/2026-11-07", scheduleMutation([{ startMinute: 360, title: "새 일정" }]))).status).toBe(200);
       const restored = createDemoTransport(storage, () => instant);
-      expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(5);
+      expect(JSON.parse(storage.getItem(key) ?? "{}").schemaVersion).toBe(6);
       expect(await (await restored.request(`/api/tasks/${task.id}`)).json()).toEqual(task);
       if (schemaVersion === 3) {
         expect(await (await restored.request("/api/journal/2026-11-07")).json()).toEqual(journal);

@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { title as normalizeTitle } from "@/domain/rules";
+import { calendarDate, title as normalizeTitle } from "@/domain/rules";
 import { Temporal } from "@js-temporal/polyfill";
 import { DailyTasks, type InlineTaskEdit } from "./daily-tasks";
 import { JournalEditor, type JournalState } from "./journal-editor";
 import { ScheduleEditor, type ScheduleState } from "./schedule-editor";
+import { TaskHistory } from "./task-history";
 import { type TaskStatus, taskStatus } from "@/domain/task-options";
 
 import type { PlannerSession, PlannerTask } from "./planner";
@@ -14,16 +15,17 @@ export type DayState = { date: string; ownerId: string; dirty: boolean; blocked:
 type Task = PlannerTask;
 const statusLabels: Record<TaskStatus, string> = { open: "진행 전", completed: "완료", deferred: "미룸", canceled: "취소" };
 const statusSymbols: Record<TaskStatus, string> = { open: "□", completed: "✓", deferred: "→", canceled: "×" };
-type View = "inbox" | "scheduled" | "overdue" | "completed";
+type View = "inbox" | "scheduled" | "overdue" | "completed" | "due";
 type Page = { items: Task[]; nextCursor: string | null };
 type Pending = { path: string; method: "POST" | "PATCH"; body: object; key: string; version?: number; startedAt: number; ownerId: string };
 const views: { id: View; label: string; empty: string }[] = [
   { id: "scheduled", label: "오늘의 할 일", empty: "오늘에 놓을 일을 입력함에서 골라보세요." },
   { id: "inbox", label: "입력함", empty: "떠오른 일을 가볍게 남겨보세요." },
   { id: "overdue", label: "이전 날짜의 미완료", empty: "이전 날짜에 남은 일이 없습니다." },
-  { id: "completed", label: "오늘 완료", empty: "완료한 일은 이곳에 모입니다." }
+  { id: "completed", label: "오늘 완료", empty: "완료한 일은 이곳에 모입니다." },
+  { id: "due", label: "마감만 이 날", empty: "마감만 이날인 미완료 할 일이 없습니다." }
 ];
-const emptyPages = (): Record<View, Page> => ({ inbox: { items: [], nextCursor: null }, scheduled: { items: [], nextCursor: null }, overdue: { items: [], nextCursor: null }, completed: { items: [], nextCursor: null } });
+const emptyPages = (): Record<View, Page> => ({ inbox: { items: [], nextCursor: null }, scheduled: { items: [], nextCursor: null }, overdue: { items: [], nextCursor: null }, completed: { items: [], nextCursor: null }, due: { items: [], nextCursor: null } });
 function listUrl(view: View, date: string, cursor?: string) {
   const query = new URLSearchParams({ view: view === "scheduled" ? "day" : view });
   if (view !== "inbox") query.set("date", date);
@@ -32,6 +34,7 @@ function listUrl(view: View, date: string, cursor?: string) {
 }
 function describeChange(body: object): string {
   return ["title" in body ? `제목: ${String(body.title)}` : "", "scheduledDate" in body ? `실행일: ${body.scheduledDate ?? "없음"}` : "",
+    "dueDate" in body ? `마감일: ${body.dueDate ?? "없음"}` : "",
     "status" in body ? `상태: ${statusLabels[body.status as TaskStatus]}` : "",
     "move" in body ? `순서: ${body.move === "up" ? "한 줄 위로" : "한 줄 아래로"}` : "",
     "moveTo" in body ? "순서: 선택한 줄의 위치로 이동" : "",
@@ -81,13 +84,22 @@ export function PlannerDay({ initialSession: session, request, demo, day, active
   const [listsReady, setListsReady] = useState(false);
   const [scheduleState, setScheduleState] = useState<ScheduleState>({ dirty: false, busy: false, pending: false, pendingDate: null });
   const [journalState, setJournalState] = useState<JournalState>({ dirty: false, busy: false, pending: false, pendingDate: null });
-  const [editing, setEditing] = useState<{ task: Task; title: string; date: string; status: TaskStatus } | null>(null);
+  const [editing, setEditing] = useState<{ task: Task; title: string; date: string; dueDate: string; status: TaskStatus } | null>(null);
   const currentOwner = useRef(session.userId), operation = useRef(false), loadSequence = useRef(0);
   const calendar = useRef(`${session.timezone}|${session.serverDate}`);
   const loadedCalendar = useRef<{ date: string; timezone: string } | null>(null);
   const statusEpoch = useRef(0);
   const selectedDateRef = useRef<string | null>(day);
   const captureInput = useRef<HTMLInputElement>(null), editInput = useRef<HTMLInputElement>(null);
+  const dueList = useRef<HTMLDetailsElement>(null), archiveList = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    // Cached dates keep their drafts, but transient overlays must not reappear
+    // over a different task flow when the user returns to that date.
+    if (!active) {
+      if (dueList.current) dueList.current.open = false;
+      if (archiveList.current) archiveList.current.open = false;
+    }
+  }, [active]);
   const editingId = editing?.task.id;
   useEffect(() => { if (editingId) editInput.current?.focus(); }, [editingId]);
 
@@ -240,14 +252,14 @@ export function PlannerDay({ initialSession: session, request, demo, day, active
   }
   function beginEdit(task: Task) {
     if (navigationDisabled || !claimOperation()) return;
-    setEditing({ task, title: task.title, date: task.scheduledDate ?? "", status: task.status });
+    setEditing({ task, title: task.title, date: task.scheduledDate ?? "", dueDate: task.dueDate ?? "", status: task.status });
   }
   function taskSection(view: typeof views[number]) { return <section className="task-section" key={view.id} id={`${idPrefix}diary-${view.id}`} aria-label={viewLabel(view.id)}>
       <div className="section-heading"><h2>{viewLabel(view.id)}</h2><span className="task-count">{pages[view.id].items.length}{pages[view.id].nextCursor ? "+" : ""}</span></div>
       {!pages[view.id].items.length && <p className="empty-state">{view.id === "scheduled" ? "작은 일부터 하나씩 채워보세요." : view.empty}</p>}
       <ul>{pages[view.id].items.map(task => <li key={task.id} className={`task-card ${task.status}`} data-task-id={task.id}>
         <div className="task-title-row"><p className="task-title"><span className="bullet-symbol" role="img" aria-label={statusLabels[task.status]}>{statusSymbols[task.status]}</span><span>{task.title}</span></p></div>
-        <p className="task-meta">{task.scheduledDate ? `실행일 ${task.scheduledDate}` : "날짜 미정"}{task.isUnprocessed ? " · 미정리" : ""}</p>
+        <p className="task-meta">실행일 {task.scheduledDate ?? "미정"} · 마감일 {task.dueDate ?? "없음"}{task.isUnprocessed ? " · 미정리" : ""}</p>
         <div className="task-controls"><label>상태<select aria-label={`${task.title} 상태`} value={task.status} disabled={navigationDisabled} onChange={event => update(task, { status: taskStatus(event.target.value) })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{statusSymbols[value as TaskStatus]} {label}</option>)}</select></label></div>
         {task.status === "deferred" && <p className="task-state-note">→ 미룸 · 실행일은 수정에서 변경할 수 있습니다.</p>}
         <div className="task-actions"><button type="button" disabled={navigationDisabled} onClick={() => update(task, { status: task.status === "completed" ? "open" : task.status === "canceled" ? "open" : "completed" })}>{task.status === "completed" ? "완료 취소" : task.status === "canceled" ? "취소 되돌리기" : "완료"}</button>
@@ -261,16 +273,20 @@ export function PlannerDay({ initialSession: session, request, demo, day, active
     <div className="planner-feedback">
     {error && <p role="alert" className="error-note">{error}</p>}
     {pending && !conflict && <div className="recovery"><p>입력과 저장 요청을 이 화면에 보관하고 있습니다.</p><button type="button" disabled={busy || locked} onClick={() => void send(pending)}>같은 요청 재시도</button><button type="button" disabled={busy} onClick={() => { if (window.confirm("목록에서 저장 여부를 확인했나요? 확인을 마치면 이전 요청을 닫습니다.")) { setPending(null); setMessage("이전 요청을 닫았습니다. 목록과 입력을 확인해주세요."); } }}>목록 확인 후 요청 닫기</button></div>}
-    {conflict && pending && <section className="recovery" aria-label="수정 충돌 확인"><h2>최신 내용과 비교</h2><p>현재 저장된 제목: {conflict.title}</p><p>현재 상태: {statusLabels[conflict.status]} · 실행일: {conflict.scheduledDate ?? "없음"}</p>
+    {conflict && pending && <section className="recovery" aria-label="수정 충돌 확인"><h2>최신 내용과 비교</h2><p>현재 저장된 제목: {conflict.title}</p><p>현재 상태: {statusLabels[conflict.status]} · 실행일: {conflict.scheduledDate ?? "없음"} · 마감일: {conflict.dueDate ?? "없음"}</p>
       <p>내 변경: {describeChange(pending.body)}</p>
       <button type="button" onClick={() => { setPending(null); setConflict(null); setEditing(null); setInlineEditing(null); void reload().catch(cause => setError(cause.message)); }}>최신 내용 사용</button>
       <button type="button" onClick={() => { const retry = { ...pending, key: crypto.randomUUID(), version: conflict.version, startedAt: Date.now() }; setConflict(null); void send(retry); }}>내 변경 다시 적용</button></section>}
-    {editing && <form className="edit-panel" onSubmit={event => { event.preventDefault(); try { update(editing.task, { title: normalizeTitle(editing.title), scheduledDate: editing.date || null, status: editing.status }, true); } catch { setError("제목과 날짜를 확인해주세요."); } }}>
+    {editing && <form className="edit-panel" onSubmit={event => { event.preventDefault(); try { update(editing.task, { title: normalizeTitle(editing.title), scheduledDate: editing.date ? calendarDate(editing.date) : null, dueDate: editing.dueDate ? calendarDate(editing.dueDate) : null, status: editing.status }, true); } catch { setError("제목과 날짜를 확인해주세요."); } }}>
       <h2>할 일 수정</h2><label>제목<input ref={editInput} value={editing.title} disabled={disabled} onChange={event => setEditing({ ...editing, title: event.target.value })} /></label>
-      <label>실행 예정일<input type="date" value={editing.date} disabled={disabled} onChange={event => setEditing({ ...editing, date: event.target.value })} /></label>
+      <div className="task-date-fields"><label>실행 예정일<input type="date" min="0001-01-01" max="9999-12-31" value={editing.date} disabled={disabled} onChange={event => setEditing({ ...editing, date: event.target.value })} /></label>
+      <label>마감일<input type="date" min="0001-01-01" max="9999-12-31" value={editing.dueDate} disabled={disabled} onChange={event => setEditing({ ...editing, dueDate: event.target.value })} /></label></div>
+      <p className="field-note">실행 예정일은 하기로 한 날, 마감일은 끝내야 하는 날입니다. 각각 비워 둘 수 있으며 실행일을 옮겨도 마감일은 유지됩니다.</p>
       <div className="entry-options"><label>진행 상태<select aria-label="진행 상태" value={editing.status} disabled={disabled} onChange={event => setEditing({ ...editing, status: taskStatus(event.target.value) })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{statusSymbols[value as TaskStatus]} {label}</option>)}</select></label></div>
       <p className="field-note">미룸은 상태 표시입니다. 날짜를 옮기려면 실행 예정일도 변경해주세요.</p>
-      <button type="submit" disabled={disabled}>변경 저장</button><button type="button" disabled={busy} onClick={() => setEditing(null)}>수정 닫기</button></form>}
+      <button type="submit" disabled={disabled}>변경 저장</button><button type="button" disabled={busy} onClick={() => setEditing(null)}>수정 닫기</button>
+      <TaskHistory key={`${session.userId}:${editing.task.id}`} taskId={editing.task.id} ownerId={session.userId} timezone={session.timezone} disabled={disabled} request={request} verifySession={verifySession} />
+      </form>}
     </div>
     <div className="diary-mobile-tabs" role="tablist" aria-label="다이어리 페이지">
       <button type="button" id={`${idPrefix}plan-tab`} data-page="plan" role="tab" aria-selected={displayedPage === "plan"} aria-controls={`${idPrefix}plan-page`} disabled={dragging || pendingPage === "journal"} onClick={() => setMobilePage("plan")}>할 일·일정</button>
@@ -288,12 +304,18 @@ export function PlannerDay({ initialSession: session, request, demo, day, active
           onCreate={createDailyTask} onRename={renameDailyTask} onStatus={(task, status) => update(task, { status })} onMove={(task, moveTo) => update(task, { moveTo })} onDragActive={setDragActive}
           onEdit={beginEdit} onMore={() => void more("scheduled")} />
         <ScheduleEditor active={active} idPrefix={idPrefix} canStartOperation={claimAsyncOperation} onOperationEnd={finishAsyncOperation} date={date.toString()} ownerId={currentOwner.current} disabled={externalDisabled || busy || dragging || Boolean(pending) || locked || Boolean(editing) || Boolean(inlineEditing) || journalState.busy || journalState.pending} demo={demo} request={request} verifySession={verifySession} onStateChange={setScheduleState} />
-        <details className="archive-tasks" id={`${idPrefix}diary-archive`}><summary>이전 기록과 입력함</summary>
+        <div className="day-reference-links">
+        <details ref={dueList} className="due-tasks" id={`${idPrefix}diary-due-list`} onToggle={event => { if (event.currentTarget.open && archiveList.current) archiveList.current.open = false; }}><summary>마감만 이 날 <span className="task-count">{listsReady ? `${pages.due.items.length}${pages.due.nextCursor ? "+" : ""}` : "…"}</span></summary>
+          <p className="field-note">실행일이 다른 날이거나 아직 없는 미완료 할 일입니다. 이날 실행할 일 다섯 줄과 별도로 표시합니다.</p>
+          {taskSection(views[4])}
+        </details>
+        <details ref={archiveList} className="archive-tasks" id={`${idPrefix}diary-archive`} onToggle={event => { if (event.currentTarget.open && dueList.current) dueList.current.open = false; }}><summary>이전 기록과 입력함</summary>
         {taskSection(views[1])}
         {taskSection(views[3])}
         <p className="completion-note">완료한 일은 실제로 마친 날짜의 기록에 모입니다.</p>
         {taskSection(views[2])}
         </details>
+        </div>
         <footer className="diary-page-footer"><span>DAILY PLAN</span><span className="page-number">{String(date.day * 2 - 1).padStart(2, "0")}</span></footer>
       </div>
       <div className="diary-page diary-page-right" id={`${idPrefix}journal-page`}>

@@ -50,9 +50,9 @@ inline 편집 동안 배경 새로고침은 세션 확인만 수행하고 할 �
 - E2E: 다섯 줄의 순차 입력·IME·Enter/Tab/blur/행 저장 → inline 제목 편집·상태 메뉴·키보드/마우스/터치 드래그·취소·새로고침 → 완료 취소·5개 제한과 이동 후 자리 확보, 일정 첫/마지막 칸·날짜별 저장, 자유글·일정 초안 이동·실패·충돌·세션 복구, 날짜 선택 동기화·일정9페이지·두 날짜 격리·회전/범위 이동 초안 보존·숨겨진 복구 자동 표시·PC/터치/휴대폰 뷰포트·ID 연결·9999 경계 검사.
 - 운영: 저장 실패율·응답 지연·충돌 횟수만 집계. 본문·검색어·토큰 제외.
 
-명세 구조 검사는 문서·JSON 연결을 확인한다. 제품 API는 OpenAPI 문서 버전 0.9.0의 11개 작업 스키마로 응답 계약을 검증하며 PostgreSQL 18에서 동시 요청·롤백·복원을 시험한다. PC·모바일 제품 E2E와 자동 접근성 검사를 추가했다. 실제 Google·운영 부하 검증과는 구분한다. 최신 결과는 docs/verification/planner-core.md와 traceability.md를 따른다. 실제 CI는 `.github/workflows/verify.yml`이다.
+명세 구조 검사는 문서·JSON 연결을 확인한다. 제품 API는 OpenAPI 문서 버전 0.10.0의 12개 작업 스키마로 응답 계약을 검증하며 PostgreSQL 18에서 동시 요청·롤백·복원을 시험한다. PC·모바일 제품 E2E와 자동 접근성 검사에 V-15의 독립 마감일·마감만 목록·계획 이력을 추가한다. 실제 Google·운영 부하 검증과는 구분한다. 최신 결과는 docs/verification/deadline-history.md와 traceability.md를 따른다. 실제 CI는 `.github/workflows/verify.yml`이다.
 
-실행 DB는 9개 테이블이며 0000~0005의 6개 순차 마이그레이션을 적용한다. `0005_task_daily_order.sql`은 기존 날짜별 생성 순서를 backfill하며 원본·버전과 5개 초과 기록을 보존한다. `schedule_entries`와 `journal_entries`는 과제 활동과 독립되고, 동일 계정·날짜 쓰기 잠금은 목적별 scope를 분리한다. 36칸은 로컬 시각의 계획표이며 반복·기간 이벤트·외부 캘린더 연동은 추가하지 않는다.
+실행 DB는 9개 테이블이며 0000~0006의 7개 순차 마이그레이션을 적용한다. `0005_task_daily_order.sql`은 기존 날짜별 생성 순서를 backfill하며 원본·버전과 5개 초과 기록을 보존한다. `0006_task_plan_history.sql`은 활동 details와 새 활동 종류·제약·조회 인덱스를 추가하며 과거 값은 null로 남긴다. `schedule_entries`와 `journal_entries`는 과제 활동과 독립되고, 동일 계정·날짜 쓰기 잠금은 목적별 scope를 분리한다. 36칸은 로컬 시각의 계획표이며 반복·기간 이벤트·외부 캘린더 연동은 추가하지 않는다.
 
 ## 배포 진입 조건
 

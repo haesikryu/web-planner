@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -12,6 +12,7 @@ import { csrfToken } from "../../src/server/auth/security";
 import { PATCH as settingsRoute } from "../../src/app/api/settings/route";
 import { GET as listTasksRoute, POST as createTaskRoute } from "../../src/app/api/tasks/route";
 import { GET as getTaskRoute, PATCH as patchTaskRoute } from "../../src/app/api/tasks/[taskId]/route";
+import { GET as activityRoute } from "../../src/app/api/tasks/[taskId]/activities/route";
 import { GET as getJournalRoute, PUT as putJournalRoute } from "../../src/app/api/journal/[date]/route";
 import { GET as getScheduleRoute, PUT as putScheduleRoute } from "../../src/app/api/schedule/[date]/route";
 import { checked } from "../contract";
@@ -479,7 +480,8 @@ describe("task API ownership, atomic changes and pagination", () => {
     expect(before.map(task => task.version)).toEqual([2, 2, 2, 2]);
     expect(before.map(task => task.dailyOrder)).toEqual([1, 2, 3, 4]);
     const activities = await db.select().from(schema.taskActivities).orderBy(schema.taskActivities.id), key = randomUUID();
-    expect(activities).toHaveLength(4);
+    expect(activities.filter(item => item.type === "created")).toHaveLength(4);
+    expect(activities.filter(item => item.type === "order_changed")).toHaveLength(4);
     await db.execute(sql`CREATE FUNCTION reject_drag_activity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-drag-fault'; END $$`);
     await db.execute(sql`CREATE TRIGGER drag_activity_failure BEFORE INSERT ON task_activities FOR EACH ROW EXECUTE FUNCTION reject_drag_activity()`);
     try {
@@ -584,7 +586,7 @@ describe("task API ownership, atomic changes and pagination", () => {
     expect((await patch(undated.id, { move: "up" }, { key, version: 1, actor: bob })).status).toBe(404);
     expect((await create({ title: "forged", scheduledDate: "2026-11-07", dailyOrder: 10 })).status).toBe(422);
     expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
-    expect(await db.select().from(schema.taskActivities)).toHaveLength(0);
+    expect((await db.select().from(schema.taskActivities)).map(item => item.type)).toEqual(["created"]);
   });
   it("paginates day order after swaps with stable tie breakers and owner-bound cursors", async () => {
     const date = "2026-11-07", items = [];
@@ -641,12 +643,13 @@ describe("task API ownership, atomic changes and pagination", () => {
     const date = "2026-11-07", key = randomUUID();
     const a = await (await create({ title: "A", scheduledDate: date })).json(), b = await (await create({ title: "B", scheduledDate: date })).json();
     const before = await db.select().from(schema.tasks).orderBy(schema.tasks.id);
+    const activitiesBefore = await db.select().from(schema.taskActivities).orderBy(schema.taskActivities.id);
     await db.execute(sql`CREATE FUNCTION reject_order_activity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-order-fault'; END $$`);
     await db.execute(sql`CREATE TRIGGER order_activity_failure BEFORE INSERT ON task_activities FOR EACH ROW EXECUTE FUNCTION reject_order_activity()`);
     try {
       expect((await patch(b.id, { move: "up" }, { key, version: 1 })).status).toBe(500);
       expect(await db.select().from(schema.tasks).orderBy(schema.tasks.id)).toEqual(before);
-      expect(await db.select().from(schema.taskActivities)).toHaveLength(0);
+      expect(await db.select().from(schema.taskActivities).orderBy(schema.taskActivities.id)).toEqual(activitiesBefore);
       expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
     } finally { await db.execute(sql`DROP TRIGGER order_activity_failure ON task_activities`); await db.execute(sql`DROP FUNCTION reject_order_activity()`); }
     expect(await (await patch(b.id, { move: "up" }, { key, version: 1 })).json()).toMatchObject({ dailyOrder: a.dailyOrder, version: 2 });
@@ -679,7 +682,7 @@ describe("task API ownership, atomic changes and pagination", () => {
     expect((await patch(task.id, { priority: "low", kind: "event" }, { key, version: 1 })).status).toBe(200);
     expect((await patch(task.id, { priority: "low", kind: "event" }, { version: 2 })).headers.get("etag")).toBe('"v2"');
     expect((await patch(task.id, { priority: "high" }, { version: 1 })).status).toBe(412);
-    expect((await db.select().from(schema.taskActivities)).map(item => item.type).sort()).toEqual(["kind_changed", "priority_changed"]);
+    expect((await db.select().from(schema.taskActivities)).map(item => item.type).sort()).toEqual(["created", "kind_changed", "priority_changed"]);
   });
   it("keeps legacy replay payload hashes and supplies additive task defaults", async () => {
     const key = randomUUID();
@@ -786,7 +789,7 @@ describe("task API ownership, atomic changes and pagination", () => {
     expect((await patch(task.id, { title: "loser" }, { version: 1 })).status).toBe(412);
     expect((await patch(task.id, { title: "winner" }, { key, version: 2 })).status).toBe(409);
     expect((await db.select().from(schema.tasks))[0]).toMatchObject({ title: "winner", version: 2 });
-    expect(await db.select().from(schema.taskActivities)).toHaveLength(0);
+    expect((await db.select().from(schema.taskActivities)).map(item => item.type)).toEqual(["created"]);
   });
   it("binds signed cursors to owner and filters, with stable no-duplicate pages", async () => {
     for (let i = 0; i < 5; i++) await create({ title: `item ${i}` });
@@ -824,6 +827,7 @@ describe("task API ownership, atomic changes and pagination", () => {
   });
   it("rolls back task, activity and replay key when an activity write fails", async () => {
     const task = await (await create({ title: "rollback" })).json();
+    const activitiesBefore = await db.select().from(schema.taskActivities);
     await db.execute(sql`CREATE FUNCTION reject_test_activity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-test-fault'; END $$`);
     await db.execute(sql`CREATE TRIGGER test_activity_failure BEFORE INSERT ON task_activities FOR EACH ROW EXECUTE FUNCTION reject_test_activity()`);
     const key = randomUUID();
@@ -832,7 +836,7 @@ describe("task API ownership, atomic changes and pagination", () => {
       expect(failed.status).toBe(500);
       expect(JSON.stringify(await failed.json())).not.toContain("synthetic-test-fault");
       expect((await db.select().from(schema.tasks))[0]).toMatchObject({ status: "open", completedAt: null, version: 1 });
-      expect(await db.select().from(schema.taskActivities)).toHaveLength(0);
+      expect(await db.select().from(schema.taskActivities)).toEqual(activitiesBefore);
       expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(1);
     } finally {
       await db.execute(sql`DROP TRIGGER test_activity_failure ON task_activities`);
@@ -851,5 +855,169 @@ describe("task API ownership, atomic changes and pagination", () => {
       expect(await db.select().from(schema.tasks)).toHaveLength(0);
     } finally { await client.query("ROLLBACK"); client.release(); }
     expect((await create({ title: "wait" }, { key })).status).toBe(201);
+  });
+
+  const history = (id: string, query = "", options: Parameters<typeof request>[3] = {}) => checked(activityRoute(request(`/api/tasks/${id}/activities${query}`, "GET", undefined, options), context(id)), "/api/tasks/{taskId}/activities", "get");
+  it("edits and clears deadlines independently, preserving replay hashes, no-op versions and original plan history", async () => {
+    const key = randomUUID(), body = { title: "deadline", scheduledDate: "2026-11-12", dueDate: "2026-11-10", isUnprocessed: false };
+    const task = await (await create(body, { key })).json();
+    expect(await (await create(body, { key })).json()).toEqual(task);
+    expect(await (await history(task.id)).json()).toMatchObject({ items: [{ type: "created", details: { before: null, after: { scheduledDate: "2026-11-12", dueDate: "2026-11-10", status: "open", dailyOrder: 1 }, version: 1 } }], nextCursor: null });
+    const patchKey = randomUUID();
+    const changed = await (await patch(task.id, { dueDate: "2026-11-09" }, { version: 1, key: patchKey })).json();
+    expect(changed).toMatchObject({ scheduledDate: task.scheduledDate, dailyOrder: 1, dueDate: "2026-11-09", version: 2 });
+    const cleared = await (await patch(task.id, { dueDate: null }, { version: 2 })).json();
+    expect(cleared).toMatchObject({ scheduledDate: task.scheduledDate, dailyOrder: 1, dueDate: null, version: 3 });
+    expect(await (await patch(task.id, { dueDate: null }, { version: 3 })).json()).toEqual(cleared);
+    expect(await (await patch(task.id, { dueDate: "2026-11-09" }, { version: 1, key: patchKey })).json()).toEqual(changed);
+    const page = await (await history(task.id)).json();
+    expect(page.items.map((event: { type: string }) => event.type)).toEqual(["due_date_changed", "due_date_changed", "created"]);
+    expect(page.items[0].details).toEqual({ before: { scheduledDate: task.scheduledDate, dueDate: "2026-11-09", status: "open", dailyOrder: 1 }, after: { scheduledDate: task.scheduledDate, dueDate: null, status: "open", dailyOrder: 1 }, version: 3 });
+    expect((await db.select().from(schema.tasks))[0]).toMatchObject({ dueDate: null, version: 3 });
+  });
+  it("validates deadline boundaries and does not consume keys or change data for invalid dates", async () => {
+    const task = await (await create({ title: "bounded", dueDate: "0001-01-01" })).json();
+    expect(task.dueDate).toBe("0001-01-01");
+    const key = randomUUID(), before = await db.select().from(schema.taskActivities);
+    for (const dueDate of ["", "0000-01-01", "2026-02-29", "2026-1-01", "10000-01-01", "2026-11-10T00:00:00Z", 1, true, {}, []]) {
+      expect((await create({ title: "bad", dueDate }, { key })).status).toBe(422);
+      expect((await patch(task.id, { dueDate }, { version: 1, key })).status).toBe(422);
+    }
+    expect(await db.select().from(schema.taskActivities)).toEqual(before);
+    expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
+    expect(await (await patch(task.id, { dueDate: "9999-12-31" }, { version: 1, key })).json()).toMatchObject({ scheduledDate: null, dueDate: "9999-12-31", version: 2 });
+    expect(await (await patch(task.id, { dueDate: "2028-02-29" }, { version: 2 })).json()).toMatchObject({ dueDate: "2028-02-29", version: 3 });
+  });
+  it("separates deadline-only tasks from scheduled tasks with owner-filtered cursor pagination and no day-capacity coupling", async () => {
+    const date = "2026-11-10", included = [];
+    for (let i = 0; i < 6; i++) included.push(await (await create({ title: `due ${i}`, dueDate: date })).json());
+    await patch(included[0].id, { status: "deferred" }, { version: 1 });
+    for (let i = 0; i < 5; i++) await create({ title: `scheduled ${i}`, scheduledDate: date, dueDate: date });
+    const completed = await (await create({ title: "completed due", dueDate: date })).json();
+    const canceled = await (await create({ title: "canceled due", dueDate: date })).json();
+    await patch(completed.id, { status: "completed" }, { version: 1 });
+    await patch(canceled.id, { status: "canceled" }, { version: 1 });
+    await create({ title: "other owner", dueDate: date }, { actor: bob });
+    let cursor: string | null = null; const ids: string[] = [];
+    do {
+      const page = await (await listTasks(request(`/api/tasks?view=due&date=${date}&limit=2${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, "GET"))).json();
+      ids.push(...page.items.map((item: { id: string }) => item.id)); cursor = page.nextCursor;
+      if (cursor) {
+        expect((await listTasks(request(`/api/tasks?view=due&date=${date}&limit=2&cursor=${encodeURIComponent(cursor)}`, "GET", undefined, { actor: bob }))).status).toBe(400);
+        expect((await listTasks(request(`/api/tasks?view=day&date=${date}&limit=2&cursor=${encodeURIComponent(cursor)}`, "GET"))).status).toBe(400);
+      }
+    } while (cursor);
+    expect(ids.sort()).toEqual(included.map(item => item.id).sort());
+    expect((await (await listTasks(request(`/api/tasks?view=day&date=${date}`, "GET"))).json()).items).toHaveLength(5);
+    expect((await patch(included[1].id, { dueDate: "2026-11-11" }, { version: 1 })).status).toBe(200);
+  });
+  it.each(["due", "day", "completed"])("paginates %s at database timestamp precision and accepts previous millisecond cursors", async view => {
+    const date = "2026-11-10", ids = [1, 2, 3, 4].map(i => `50000000-0000-4000-8000-00000000000${i}`);
+    for (const [index, fraction] of ["123001", "123002", "123002", "123003"].entries()) {
+      const instant = `${date}T00:00:00.${fraction}Z`, scheduledDate = view === "due" ? null : date;
+      await db.execute(sql`INSERT INTO tasks (id,owner_id,title,status,created_at,scheduled_date,daily_order,due_date,completed_at)
+        VALUES (${ids[index]},${alice},${`precise ${index}`},${view === "completed" ? "completed" : "open"},${instant}::timestamptz,
+        ${scheduledDate}::date,${scheduledDate === null ? null : 1},${date}::date,${view === "completed" ? instant : null}::timestamptz)`);
+    }
+    const expected = view === "completed" ? [ids[3], ids[1], ids[2], ids[0]] : ids;
+    for (const legacy of [false, true]) {
+      const found: string[] = []; let cursor: string | null = null;
+      for (let pages = 0; pages < 8; pages++) {
+        const response = await listTasks(request(`/api/tasks?view=${view}&date=${date}&limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, "GET"));
+        expect(response.status).toBe(200);
+        const page = await response.json();
+        found.push(...page.items.map((item: { id: string }) => item.id)); cursor = page.nextCursor;
+        if (!cursor) break;
+        const boundary = JSON.parse(Buffer.from(cursor.split(".")[0], "base64url").toString());
+        expect(boundary.time).toMatch(/\.\d{6}Z$/u);
+        if (legacy) {
+          boundary.time = new Date(boundary.time).toISOString();
+          const payload = Buffer.from(JSON.stringify(boundary)).toString("base64url");
+          cursor = `${payload}.${createHmac("sha256", config.secret).update(`planner:cursor:v1:${payload}`).digest("base64url")}`;
+        }
+      }
+      expect(cursor).toBeNull(); expect(found).toEqual(expected); expect(new Set(found).size).toBe(ids.length);
+    }
+  });
+  it("retains original plan and deadline through future completion, later movement and completion undo", async () => {
+    const task = await (await create({ title: "future plan", scheduledDate: "9999-12-31", dueDate: "9999-12-30", isUnprocessed: false })).json();
+    const complete = await (await patch(task.id, { status: "completed" }, { version: 1 })).json();
+    expect((await (await listTasks(request(`/api/tasks?view=completed&date=${today("Asia/Seoul")}`, "GET"))).json()).items.map((item: { id: string }) => item.id)).toContain(task.id);
+    await patch(task.id, { scheduledDate: "9999-12-29", dueDate: null }, { version: 2 });
+    await patch(task.id, { status: "open" }, { version: 3 });
+    const page = await (await history(task.id)).json();
+    const completedEvent = page.items.find((event: { type: string }) => event.type === "completed");
+    expect(completedEvent).toMatchObject({ occurredAt: complete.completedAt, invalidatedBy: expect.any(String), details: { before: { scheduledDate: "9999-12-31", dueDate: "9999-12-30", status: "open" }, after: { scheduledDate: "9999-12-31", dueDate: "9999-12-30", status: "completed" }, version: 2 } });
+    expect(page.items.find((event: { type: string }) => event.type === "scheduled_date_changed").details).toMatchObject({ before: { scheduledDate: "9999-12-31", dueDate: "9999-12-30" }, after: { scheduledDate: "9999-12-29", dueDate: null }, version: 3 });
+    expect(page.items.find((event: { type: string }) => event.type === "created").details.after.scheduledDate).toBe("9999-12-31");
+    expect((await (await listTasks(request(`/api/tasks?view=completed&date=${today("Asia/Seoul")}`, "GET"))).json()).items).toHaveLength(0);
+  });
+  it("pages tied and sub-millisecond legacy history without fabrication, leaks, duplication or reusable foreign cursors", async () => {
+    const task = await (await create({ title: "history" })).json(), other = await (await create({ title: "other" })).json();
+    for (const [id, occurredAt] of [["30000000-0000-4000-8000-000000000001", "2026-01-01T00:00:00.123999Z"], ["30000000-0000-4000-8000-000000000002", "2026-01-01T00:00:00.123998Z"], ["30000000-0000-4000-8000-000000000003", "2026-01-01T00:00:00.123998Z"]]) await db.execute(sql`INSERT INTO task_activities (id,owner_id,task_id,type,occurred_at) VALUES (${id},${alice},${task.id},'scheduled_date_changed',${occurredAt}::timestamptz)`);
+    let cursor: string | null = null; const events: { id: string; details: unknown }[] = [];
+    do {
+      const page = await (await history(task.id, `?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)).json();
+      events.push(...page.items); cursor = page.nextCursor;
+      expect(JSON.stringify(page)).not.toContain(alice);
+      if (cursor) {
+        expect((await history(other.id, `?limit=1&cursor=${encodeURIComponent(cursor)}`)).status).toBe(400);
+        expect((await history(task.id, `?limit=2&cursor=${encodeURIComponent(cursor)}`)).status).toBe(400);
+        expect((await history(task.id, `?limit=1&cursor=${encodeURIComponent(`${cursor}x`)}`)).status).toBe(400);
+      }
+    } while (cursor);
+    expect(events.map(event => event.id).slice(1)).toEqual([1, 2, 3].map(i => `30000000-0000-4000-8000-00000000000${i}`));
+    expect(events.slice(1).every(event => event.details === null)).toBe(true);
+    expect((await history(task.id, "", { actor: bob })).status).toBe(404);
+    expect((await history(randomUUID(), "", { actor: bob })).status).toBe(404);
+    expect((await history(task.id, "", { actor: "anonymous" })).status).toBe(401);
+    for (const query of ["?limit=0", "?limit=101", "?limit=1&limit=2", "?extra=1", "?date=2026-11-10", "?limit=1.5"]) expect((await history(task.id, query)).status).toBe(422);
+  });
+  it("records one atomic date-and-deadline mutation under contention and restores every value on activity failure", async () => {
+    const task = await (await create({ title: "atomic deadline", scheduledDate: "2026-11-10", dueDate: "2026-11-12" })).json();
+    const responses = await Promise.all([patch(task.id, { dueDate: "2026-11-11" }, { version: 1 }), patch(task.id, { dueDate: null }, { version: 1 })]);
+    expect(responses.map(response => response.status).sort()).toEqual([200, 412]);
+    const before = await db.select().from(schema.tasks), events = await db.select().from(schema.taskActivities).orderBy(schema.taskActivities.id), key = randomUUID();
+    expect(events.filter(event => event.type === "due_date_changed")).toHaveLength(1);
+    await db.execute(sql`CREATE FUNCTION reject_plan_activity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-plan-fault'; END $$`);
+    await db.execute(sql`CREATE TRIGGER plan_activity_failure BEFORE INSERT ON task_activities FOR EACH ROW EXECUTE FUNCTION reject_plan_activity()`);
+    try {
+      expect((await patch(task.id, { scheduledDate: "2026-11-09", dueDate: "2026-11-08" }, { version: 2, key })).status).toBe(500);
+      expect(await db.select().from(schema.tasks)).toEqual(before);
+      expect(await db.select().from(schema.taskActivities).orderBy(schema.taskActivities.id)).toEqual(events);
+      expect(await db.select().from(schema.idempotencyRecords).where(eq(schema.idempotencyRecords.key, key))).toHaveLength(0);
+    } finally { await db.execute(sql`DROP TRIGGER plan_activity_failure ON task_activities`); await db.execute(sql`DROP FUNCTION reject_plan_activity()`); }
+    expect((await patch(task.id, { scheduledDate: "2026-11-09", dueDate: "2026-11-08" }, { version: 2, key })).status).toBe(200);
+    expect((await patch(task.id, { scheduledDate: "2026-11-09", dueDate: "2026-11-08" }, { version: 2, key })).status).toBe(200);
+    expect((await db.select().from(schema.taskActivities)).filter(event => event.details?.version === 3).map(event => event.type).sort()).toEqual(["due_date_changed", "scheduled_date_changed"]);
+  });
+  it("keeps every shifted row's original date, deadline and order in history while replaying a drag once", async () => {
+    const day = "2026-11-10", tasks = [];
+    for (const title of ["A", "B", "C"]) tasks.push(await (await create({ title, scheduledDate: day, dueDate: "2026-11-12" })).json());
+    const key = randomUUID(), body = { moveTo: tasks[2].id };
+    expect((await patch(tasks[0].id, body, { version: 1, key })).status).toBe(200);
+    expect((await patch(tasks[0].id, body, { version: 1, key })).status).toBe(200);
+    const events = (await db.select().from(schema.taskActivities)).filter(event => event.type === "order_changed");
+    expect(events).toHaveLength(3);
+    for (const [index, task] of tasks.entries()) {
+      expect(events.find(event => event.taskId === task.id)?.details).toEqual({
+        before: { scheduledDate: day, dueDate: "2026-11-12", dailyOrder: index + 1, status: "open" },
+        after: { scheduledDate: day, dueDate: "2026-11-12", dailyOrder: index === 0 ? 3 : index, status: "open" }, version: 2
+      });
+    }
+  });
+  it("rolls back newly created tasks and replay keys if the initial plan snapshot cannot be stored", async () => {
+    const key = randomUUID(), body = { title: "atomic creation", dueDate: "2026-11-10" };
+    await db.execute(sql`CREATE FUNCTION reject_created_activity() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic-created-fault'; END $$`);
+    await db.execute(sql`CREATE TRIGGER created_activity_failure BEFORE INSERT ON task_activities FOR EACH ROW EXECUTE FUNCTION reject_created_activity()`);
+    try {
+      expect((await create(body, { key })).status).toBe(500);
+      expect(await db.select().from(schema.tasks)).toHaveLength(0);
+      expect(await db.select().from(schema.taskActivities)).toHaveLength(0);
+      expect(await db.select().from(schema.idempotencyRecords)).toHaveLength(0);
+    } finally { await db.execute(sql`DROP TRIGGER created_activity_failure ON task_activities`); await db.execute(sql`DROP FUNCTION reject_created_activity()`); }
+    expect((await create(body, { key })).status).toBe(201);
+    expect((await create(body, { key })).status).toBe(201);
+    expect((await db.select().from(schema.taskActivities)).map(event => event.type)).toEqual(["created"]);
   });
 });

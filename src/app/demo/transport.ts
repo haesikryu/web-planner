@@ -3,6 +3,7 @@ import { calendarDate, dayRange, InputError, object, title, timezone, today, uui
 import { normalizeScheduleSlots, type ScheduleEntry, type ScheduleSlot } from "../../domain/schedule";
 import { type TaskKind, type TaskPriority, type TaskStatus, taskKind, taskPriority, taskStatus } from "../../domain/task-options";
 import { DAILY_TASK_LIMIT, type TaskMove, taskMove } from "../../domain/task-order";
+import { taskActivity, taskPlanSnapshot, type TaskActivity, type TaskActivityType } from "../../domain/task-history";
 import type { PlannerSession } from "../planner";
 
 const STORAGE_KEY = "web-planner:demo:v1";
@@ -14,6 +15,7 @@ type DemoTask = {
   priority: TaskPriority;
   kind: TaskKind;
   scheduledDate: string | null;
+  dueDate: string | null;
   dailyOrder: number | null;
   isUnprocessed: boolean;
   version: number;
@@ -23,9 +25,9 @@ type DemoTask = {
 };
 type JournalRequest = { key: string; date: string; content: string; version: number; expiresAt: string; response: JournalEntry };
 type ScheduleRequest = { key: string; date: string; slots: ScheduleSlot[]; version: number; expiresAt: string; response: ScheduleEntry };
-type TaskInput = Partial<Pick<DemoTask, "title" | "scheduledDate" | "status" | "priority" | "kind" | "isUnprocessed">> & { move?: TaskMove; moveTo?: string };
+type TaskInput = Partial<Pick<DemoTask, "title" | "scheduledDate" | "dueDate" | "status" | "priority" | "kind" | "isUnprocessed">> & { move?: TaskMove; moveTo?: string };
 type TaskRequest = { key: string; method: "POST" | "PATCH"; path: string; input: TaskInput; version: number | null; expiresAt: string; response: DemoTask };
-type DemoState = { schemaVersion: 5; timezone: string; settingsVersion: number; tasks: DemoTask[]; journals: JournalEntry[]; journalRequests: JournalRequest[];
+type DemoState = { schemaVersion: 6; timezone: string; settingsVersion: number; tasks: DemoTask[]; activities: TaskActivity[]; journals: JournalEntry[]; journalRequests: JournalRequest[];
   schedules: ScheduleEntry[]; scheduleRequests: ScheduleRequest[]; taskRequests: TaskRequest[] };
 type DemoStorage = Pick<Storage, "getItem" | "setItem">;
 
@@ -62,6 +64,7 @@ function validTask(task: DemoTask): boolean {
     taskPriority(task.priority) === task.priority && taskKind(task.kind) === task.kind && taskStatus(task.status) === task.status &&
     typeof task.isUnprocessed === "boolean" && timestamp(task.createdAt) && timestamp(task.updatedAt) &&
     (task.scheduledDate === null || calendarDate(task.scheduledDate) === task.scheduledDate) &&
+    (task.dueDate === null || calendarDate(task.dueDate) === task.dueDate) &&
     (task.status === "completed" ? timestamp(task.completedAt) : task.completedAt === null);
 }
 
@@ -78,7 +81,7 @@ function dayOrder(left: DemoTask, right: DemoTask): number {
 }
 
 function taskFields(create: boolean) {
-  return create ? ["title", "scheduledDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "status", "isUnprocessed", "priority", "kind", "move", "moveTo"];
+  return create ? ["title", "scheduledDate", "dueDate", "isUnprocessed", "priority", "kind"] : ["title", "scheduledDate", "dueDate", "status", "isUnprocessed", "priority", "kind", "move", "moveTo"];
 }
 
 function normalizedTaskInput(raw: unknown, create: boolean): TaskInput {
@@ -95,6 +98,7 @@ function normalizedTaskInput(raw: unknown, create: boolean): TaskInput {
   const result: TaskInput = {};
   if ("title" in input) result.title = title(input.title);
   if ("scheduledDate" in input) result.scheduledDate = input.scheduledDate === null ? null : calendarDate(input.scheduledDate);
+  if ("dueDate" in input) result.dueDate = input.dueDate === null ? null : calendarDate(input.dueDate);
   if ("status" in input) result.status = taskStatus(input.status);
   if ("priority" in input) result.priority = taskPriority(input.priority);
   if ("kind" in input) result.kind = taskKind(input.kind);
@@ -113,16 +117,17 @@ function sameTaskInput(left: TaskInput, right: TaskInput): boolean {
 
 function readState(storage: DemoStorage): DemoState {
   const stored = storage.getItem(STORAGE_KEY);
-  if (stored === null) return { schemaVersion: 5, timezone: "Asia/Seoul", settingsVersion: 1, tasks: [], journals: [], journalRequests: [], schedules: [], scheduleRequests: [], taskRequests: [] };
+  if (stored === null) return { schemaVersion: 6, timezone: "Asia/Seoul", settingsVersion: 1, tasks: [], activities: [], journals: [], journalRequests: [], schedules: [], scheduleRequests: [], taskRequests: [] };
   try {
-    const state = JSON.parse(stored) as Omit<DemoState, "schemaVersion"> & { schemaVersion: 1 | 2 | 3 | 4 | 5 };
-    if (![1, 2, 3, 4, 5].includes(state.schemaVersion) || !positiveInteger(state.settingsVersion) || timezone(state.timezone) !== state.timezone || !Array.isArray(state.tasks)) throw new Error();
+    const state = JSON.parse(stored) as Omit<DemoState, "schemaVersion"> & { schemaVersion: 1 | 2 | 3 | 4 | 5 | 6 };
+    if (![1, 2, 3, 4, 5, 6].includes(state.schemaVersion) || !positiveInteger(state.settingsVersion) || timezone(state.timezone) !== state.timezone || !Array.isArray(state.tasks)) throw new Error();
     const ids = new Set<string>();
     for (const task of state.tasks) {
       // Adapt old entries in memory; persist only with the next successful mutation.
       task.priority = state.schemaVersion === 1 && !("priority" in task) ? "medium" : taskPriority(task.priority);
       task.kind = state.schemaVersion === 1 && !("kind" in task) ? "task" : taskKind(task.kind);
       task.status = taskStatus(task.status);
+      if (state.schemaVersion < 6 && !Object.hasOwn(task, "dueDate")) task.dueDate = null;
       if (!validTask(task) || ids.has(task.id)) throw new Error();
       ids.add(task.id);
     }
@@ -188,6 +193,7 @@ function readState(storage: DemoStorage): DemoState {
     for (const saved of state.taskRequests) {
       // Old response snapshots predate row order; do not invent a historical position.
       if (state.schemaVersion < 5 && !Object.hasOwn(saved.response, "dailyOrder")) saved.response.dailyOrder = null;
+      if (state.schemaVersion < 6 && !Object.hasOwn(saved.response, "dueDate")) saved.response.dueDate = null;
       const scope = `${saved.method}:${saved.path}:${saved.key}`;
       const create = saved.method === "POST";
       if (!["POST", "PATCH"].includes(saved.method) || !uuidPattern.test(saved.key) || saved.key !== saved.key.toLowerCase() || requestKeys.has(scope) ||
@@ -196,7 +202,19 @@ function readState(storage: DemoStorage): DemoState {
           !sameTaskInput(normalizedTaskInput(saved.input, create), saved.input) || !timestamp(saved.expiresAt) || !validTask(saved.response) || !validDailyOrder(saved.response, true)) throw new Error();
       requestKeys.add(scope);
     }
-    return { ...state, schemaVersion: 5 };
+    // Previous demo versions never retained activities. Do not manufacture historical values.
+    if (state.schemaVersion < 6) state.activities = [];
+    if (!Array.isArray(state.activities)) throw new Error();
+    const activityIds = new Set<string>();
+    for (const raw of state.activities) {
+      const activity = taskActivity(raw);
+      if (!ids.has(activity.taskId) || activityIds.has(activity.id)) throw new Error();
+      activityIds.add(activity.id);
+    }
+    for (const activity of state.activities) {
+      if (activity.invalidatedBy !== null && !state.activities.some(other => other.id === activity.invalidatedBy && other.taskId === activity.taskId && other.type === "completion_undone")) throw new Error();
+    }
+    return { ...state, schemaVersion: 6 };
   } catch {
     throw new Error("브라우저의 테스트 저장 데이터가 손상되어 불러올 수 없습니다.");
   }
@@ -275,12 +293,13 @@ function appendedOrder(state: DemoState, date: string | null): number | null {
 
 function listTasks(state: DemoState, params: URLSearchParams, now: Date) {
   const view = params.get("view") ?? "inbox";
-  if (!["inbox", "day", "scheduled", "overdue", "completed"].includes(view)) throw new InputError("view");
+  if (!["inbox", "day", "scheduled", "overdue", "completed", "due"].includes(view)) throw new InputError("view");
   const date = view === "inbox" ? null : calendarDate(params.get("date"));
   const range = view === "completed" && date ? dayRange(date, state.timezone) : null;
   const items = state.tasks.filter(task => {
     if (view === "inbox") return task.isUnprocessed;
     if (view === "day") return task.scheduledDate === date;
+    if (view === "due") return (task.status === "open" || task.status === "deferred") && task.dueDate === date && task.scheduledDate !== date;
     if (view === "scheduled") return task.status !== "completed" && task.scheduledDate === date;
     if (view === "overdue") return (task.status === "open" || task.status === "deferred") && task.scheduledDate !== null && task.scheduledDate < (date ?? "");
     return task.status === "completed" && task.completedAt !== null && range !== null &&
@@ -294,6 +313,30 @@ function listTasks(state: DemoState, params: URLSearchParams, now: Date) {
     return order || left.id.localeCompare(right.id);
   });
   return { items, nextCursor: null, timezone: state.timezone, serverDate: today(state.timezone, now) };
+}
+
+function appendActivity(state: DemoState, type: TaskActivityType, before: DemoTask | null, after: DemoTask, instant: Date): TaskActivity {
+  const activity: TaskActivity = { id: crypto.randomUUID(), taskId: after.id, type, occurredAt: instant.toISOString(), invalidatedBy: null,
+    details: { before: before ? taskPlanSnapshot(before) : null, after: taskPlanSnapshot(after), version: after.version } };
+  state.activities.push(activity);
+  return activity;
+}
+
+function listActivities(state: DemoState, taskId: string, params: URLSearchParams) {
+  if ([...params.keys()].some(key => !["limit", "cursor"].includes(key) || params.getAll(key).length !== 1)) throw new InputError("query");
+  const limitText = params.get("limit") ?? "50", limit = Number(limitText);
+  if (!/^\d+$/u.test(limitText) || limit < 1 || limit > 100) throw new InputError("limit");
+  let items = state.activities.filter(item => item.taskId === taskId).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt) || a.id.localeCompare(b.id));
+  const cursor = params.get("cursor");
+  if (cursor !== null) {
+    const parts = cursor.split(":");
+    const afterId = parts[1];
+    const previous = items.find(item => item.id === afterId);
+    if (parts.length !== 3 || parts[0] !== taskId || parts[2] !== String(limit) || !previous) throw new DemoRequestError(400, "INVALID_CURSOR", "이력을 새로 불러와주세요.");
+    items = items.filter(item => item.occurredAt < previous.occurredAt || item.occurredAt === previous.occurredAt && item.id > previous.id);
+  }
+  const selected = items.slice(0, limit);
+  return { items: selected, nextCursor: items.length > limit ? `${taskId}:${selected.at(-1)?.id}:${limit}` : null };
 }
 
 /** All requests stay in this browser's injected storage, including unknown paths. */
@@ -358,12 +401,14 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
         const task: DemoTask = {
           id: crypto.randomUUID(), title: input.title ?? "", status: "open", isUnprocessed: input.isUnprocessed !== false, version: 1,
           priority: input.priority ?? "medium", kind: input.kind ?? "task", scheduledDate: input.scheduledDate ?? null,
+          dueDate: input.dueDate ?? null,
           dailyOrder: appendedOrder(state, input.scheduledDate ?? null),
           createdAt: instant.toISOString(), updatedAt: instant.toISOString(), completedAt: null
         };
         if (!task.isUnprocessed && task.scheduledDate === null) throw new InputError("isUnprocessed");
         checkDailyCapacity(state, task.scheduledDate);
         state.tasks.push(task);
+        appendActivity(state, "created", null, task, instant);
         rememberTask(state, { ...write, response: task }, instant);
         storage.setItem(STORAGE_KEY, JSON.stringify(state));
         return json(task, 201, task.version);
@@ -377,6 +422,11 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
           storage.setItem(STORAGE_KEY, JSON.stringify(state));
         }
         return json({ timezone: state.timezone, version: state.settingsVersion }, 200, state.settingsVersion);
+      }
+      const historyMatch = /^\/api\/tasks\/([^/]+)\/activities$/u.exec(url.pathname);
+      if (method === "GET" && historyMatch) {
+        if (!state.tasks.some(item => item.id === historyMatch[1])) return json({ code: "NOT_FOUND" }, 404);
+        return json(listActivities(state, historyMatch[1], url.searchParams));
       }
       const match = /^\/api\/tasks\/([^/]+)$/u.exec(url.pathname);
       if (!match || !["GET", "PATCH"].includes(method)) return json({ code: "NOT_FOUND" }, 404);
@@ -403,6 +453,7 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
           reordered.splice(index, 1); reordered.splice(targetIndex, 0, task);
           const changed = reordered.slice(first, last + 1).map((item, offset) => ({ ...item, dailyOrder: affected[offset].dailyOrder, version: item.version + 1, updatedAt: instant.toISOString() }));
           state.tasks = state.tasks.map(item => changed.find(candidate => candidate.id === item.id) ?? item);
+          for (const item of changed) appendActivity(state, "order_changed", affected.find(original => original.id === item.id) ?? null, item, instant);
           next = changed.find(item => item.id === task.id) ?? task;
         }
         rememberTask(state, { ...write, response: next }, instant);
@@ -424,6 +475,16 @@ export function createDemoTransport(storage: DemoStorage, now: () => Date = () =
         next.version++;
         next.updatedAt = instant.toISOString();
         state.tasks[state.tasks.indexOf(task)] = next;
+        if (next.status !== task.status) {
+          if (task.status === "completed") {
+            const undo = appendActivity(state, "completion_undone", task, next, instant);
+            for (const activity of state.activities) if (activity.taskId === task.id && activity.type === "completed" && activity.invalidatedBy === null) activity.invalidatedBy = undo.id;
+          }
+          if (!(task.status === "completed" && next.status === "open")) appendActivity(state, next.status === "open" ? "reopened" : next.status, task, next, instant);
+        }
+        for (const [field, type] of [["scheduledDate", "scheduled_date_changed"], ["dueDate", "due_date_changed"], ["isUnprocessed", "processing_changed"], ["priority", "priority_changed"], ["kind", "kind_changed"]] as const) {
+          if (next[field] !== task[field]) appendActivity(state, type, task, next, instant);
+        }
       }
       rememberTask(state, { ...write, response: next }, instant);
       storage.setItem(STORAGE_KEY, JSON.stringify(state));

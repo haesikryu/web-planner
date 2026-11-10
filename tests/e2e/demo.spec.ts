@@ -10,6 +10,39 @@ function secondary(page: Page) {
   return page.locator('.planner-day[data-panel="secondary"]');
 }
 
+test("demo deadline editing and original plan history survive reload without API traffic", async ({ page }) => {
+  test.setTimeout(60_000);
+  const traffic: string[] = [];
+  page.on("request", request => { if (new URL(request.url()).pathname.startsWith("/api/")) traffic.push(request.url()); });
+  await page.goto("/demo");
+  await addDaily(page, "마감과 이력 체험");
+  const today = (await primary(page).locator(".date-line").textContent() ?? "").slice(0, 10);
+  const tomorrow = Temporal.PlainDate.from(today).add({ days: 1 }).toString();
+  await dailyRow(page, "마감과 이력 체험").getByRole("button", { name: "마감과 이력 체험 수정", exact: true }).click();
+  const editor = primary(page).locator(".edit-panel");
+  await editor.getByLabel("실행 예정일", { exact: true }).fill(tomorrow);
+  await editor.getByLabel("마감일", { exact: true }).fill(today);
+  await editor.getByRole("button", { name: "변경 저장", exact: true }).click();
+  await expect(editor).toBeHidden();
+  await expect(primary(page).locator(".daily-task-row[data-task-id]")).toHaveCount(0);
+  const due = primary(page).locator(".due-tasks");
+  await expect(due.locator("summary")).toContainText("1");
+  await due.locator("summary").click();
+  await due.getByRole("button", { name: "수정", exact: true }).click();
+  await editor.getByRole("button", { name: "계획 변경 이력", exact: true }).click();
+  const history = editor.getByRole("region", { name: "계획 변경 이력", exact: true });
+  await expect(history.locator("[data-activity-id]")).toHaveCount(3);
+  await expect(history).toContainText(`실행일: ${today} → ${tomorrow}`);
+  await expect(history).toContainText(`마감일: 없음 → ${today}`);
+  await expectViewport(page);
+  await editor.getByRole("button", { name: "수정 닫기", exact: true }).click();
+  await page.reload();
+  await expect(due.locator("summary")).toContainText("1");
+  await due.locator("summary").click();
+  await expect(due).toContainText(`실행일 ${tomorrow} · 마감일 ${today}`);
+  expect(traffic).toEqual([]);
+});
+
 function dailyRow(page: Page, title: string, scope: Locator = primary(page)) {
   return scope.locator(".daily-task-row[data-task-id]").filter({ has: page.getByRole("button", { name: `${title} 상태 변경`, exact: true }) });
 }
@@ -291,7 +324,7 @@ test("an unscheduled organized completion returns to inbox after cancellation or
   await doneCard.getByLabel("날짜 없는 기록 상태", { exact: true }).selectOption("canceled");
   await expect(inboxCard.locator(".bullet-symbol")).toHaveText("×");
   await expect(inboxCard).toHaveAttribute("data-task-id", id ?? "");
-  await expect(inboxCard).toContainText("날짜 미정");
+  await expect(inboxCard).toContainText("실행일 미정 · 마감일 없음");
   await expect(doneCard).toHaveCount(0);
   await page.reload();
   await openHistory(page);
@@ -307,7 +340,7 @@ test("an unscheduled organized completion returns to inbox after cancellation or
   await page.reload();
   await openHistory(page);
   await expect(inboxCard.getByLabel("날짜 없는 기록 상태", { exact: true })).toHaveValue("open");
-  await expect(inboxCard).toContainText("날짜 미정");
+  await expect(inboxCard).toContainText("실행일 미정 · 마감일 없음");
 });
 
 

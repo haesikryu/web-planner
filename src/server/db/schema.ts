@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { boolean, check, date, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import type { ScheduleSlot } from "../../domain/schedule";
+import type { TaskActivityDetails } from "../../domain/task-history";
 
 const instant = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 export const user = pgTable("users", {
@@ -45,17 +46,21 @@ export const tasks = pgTable("tasks", {
   check("task_completion", sql`(${t.status} IN ('open', 'deferred', 'canceled') AND ${t.completedAt} IS NULL) OR (${t.status} = 'completed' AND ${t.completedAt} IS NOT NULL)`),
   index("task_inbox_idx").on(t.ownerId, t.isUnprocessed, t.createdAt, t.id),
   index("task_date_idx").on(t.ownerId, t.status, t.scheduledDate, t.id), index("task_completed_idx").on(t.ownerId, t.completedAt, t.id),
-  index("task_day_order_idx").on(t.ownerId, t.scheduledDate, t.dailyOrder, t.createdAt, t.id)]);
+  index("task_day_order_idx").on(t.ownerId, t.scheduledDate, t.dailyOrder, t.createdAt, t.id),
+  index("task_due_idx").on(t.ownerId, t.dueDate, t.createdAt, t.id)]);
 export const taskActivities = pgTable("task_activities", {
   id: uuid("id").primaryKey().defaultRandom(), ownerId: text("owner_id").notNull(), taskId: uuid("task_id").notNull(),
-  type: text("type").notNull(), occurredAt: instant("occurred_at").notNull().defaultNow(), invalidatedBy: uuid("invalidated_by")
+  type: text("type").notNull(), occurredAt: instant("occurred_at").notNull().defaultNow(), invalidatedBy: uuid("invalidated_by"),
+  details: jsonb("details").$type<TaskActivityDetails>()
 }, t => [unique("activity_owner_task_unique").on(t.id, t.ownerId, t.taskId),
   foreignKey({ columns: [t.taskId, t.ownerId], foreignColumns: [tasks.id, tasks.ownerId] }).onDelete("cascade"),
   foreignKey({ columns: [t.invalidatedBy, t.ownerId, t.taskId], foreignColumns: [t.id, t.ownerId, t.taskId] }),
-  check("activity_type", sql`${t.type} IN ('completed', 'completion_undone', 'scheduled_date_changed', 'processing_changed', 'deferred', 'canceled', 'reopened', 'priority_changed', 'kind_changed', 'order_changed')`),
+  check("activity_type", sql`${t.type} IN ('created', 'due_date_changed', 'completed', 'completion_undone', 'scheduled_date_changed', 'processing_changed', 'deferred', 'canceled', 'reopened', 'priority_changed', 'kind_changed', 'order_changed')`),
+  check("activity_details", sql`public.planner_valid_activity_details(${t.details}, ${t.type})`),
   check("activity_invalidation", sql`${t.invalidatedBy} IS NULL OR (${t.type} = 'completed' AND ${t.invalidatedBy} <> ${t.id})`),
   uniqueIndex("activity_active_completion_unique").on(t.taskId).where(sql`${t.type} = 'completed' AND ${t.invalidatedBy} IS NULL`),
-  index("activity_task_idx").on(t.taskId, t.occurredAt)]);
+  index("activity_task_idx").on(t.taskId, t.occurredAt),
+  index("activity_history_idx").on(t.ownerId, t.taskId, t.occurredAt, t.id)]);
 export const journalEntries = pgTable("journal_entries", {
   ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
   date: date("entry_date").notNull(), content: text("content").notNull(),

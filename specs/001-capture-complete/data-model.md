@@ -9,12 +9,30 @@
 | sessions | id, token_hash, user_id, created_at, updated_at, expires_at | bearer 원문은 해시 저장. updated_at은 마지막 활동, created_at은 절대 만료 기준. CSRF는 세션 ID와 서버 비밀로 도출 |
 | verifications | id, identifier, value, expires_at, created_at, updated_at | OAuth state·PKCE의 단기 보관과 일회 소비 |
 | tasks | id, owner_id, title, priority, kind, status, scheduled_date, daily_order, due_date, is_unprocessed, completed_at, version, created_at, updated_at | owner 필수, title 규칙, version 양수, 실행일 없음 iff daily_order null·그 외 양수 |
-| task_activities | id, owner_id, task_id, type, occurred_at, invalidated_by | 완료·완료취소·미룸·취소·복원·실행일·정리·순서(order_changed)·호환 우선순위·유형 변경 기록 |
+| task_activities | id, owner_id, task_id, type, occurred_at, invalidated_by, details | 생성·완료·완료취소·미룸·취소·복원·실행일·마감일·정리·순서·호환 우선순위/유형 기록. details는 당시 계획 before/after/version, 기존 활동은 null |
 | journal_entries | owner_id, entry_date, content, version, updated_at | owner·entry_date 복합 기본키, 0~10,000 코드 포인트, 양수 저장 버전 |
 | schedule_entries | owner_id, entry_date, slots, version, updated_at | owner·entry_date 복합키, 정렬된 최대 36개 슬롯 JSONB, 양수 저장 버전 |
 | idempotency_records | owner_id, method, path, key, request_hash, state, response, expires_at | owner·method·path·key 유일 |
 
-tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. 첫 기능의 due_date는 원문 보존용 nullable 필드이며 이 기능 API에서 신규 지정·변경하지 않는다. 후속 명세에서 추가한다. status는 open·completed·deferred·canceled이고 화면에 □ 진행 전·✓ 완료·→ 미룸·× 취소로 표시한다. 기존 priority는 high·medium·low이고 현재 화면에서는 표시하거나 선택하지 않는다. 화면의 중요도는 날짜별 daily_order의 오름차순 위치로 표현한다. 등록 화면은 제목만 입력받고 selected date를 scheduledDate로, isUnprocessed=false로 보내 priority의 기본값 medium을 사용한다. 현재 화면은 고정된 다섯 줄에서 제목을 순차 입력하고 view=day의 순서를 드래그 핸들로 바꾸며 화면은 moveTo를 보낸다. priority·kind는 생성·수정 요청에 포함하지 않는다. 날짜를 생략한 API 생성의 날짜 없음·미정리 기본값은 유지한다.
+tasks의 날짜 필드는 NULL 허용 달력 날짜, 시각 필드는 UTC instant다. API 0.10부터 due_date를 생성·수정할 수 있으며 scheduled_date와 독립이다. 둘 다 0001-01-01~9999-12-31의 날짜 또는 null이고 실행일보다 이른 마감일도 유효하다. 날짜를 생략한 기존 요청 해시에 dueDate 기본값을 추가하지 않는다. status는 open·completed·deferred·canceled이고 화면에 □ 진행 전·✓ 완료·→ 미룸·× 취소로 표시한다. 기존 priority는 high·medium·low이고 현재 화면에서는 표시하거나 선택하지 않는다. 화면의 중요도는 날짜별 daily_order의 오름차순 위치로 표현한다. 등록 화면은 제목만 입력받고 selected date를 scheduledDate로, isUnprocessed=false로 보내 priority의 기본값 medium을 사용한다. 현재 화면은 고정된 다섯 줄에서 제목을 순차 입력하고 view=day의 순서를 드래그 핸들로 바꾸며 화면은 moveTo를 보낸다. priority·kind는 생성·수정 요청에 포함하지 않는다. 날짜를 생략한 API 생성의 날짜 없음·미정리 기본값은 유지한다.
+
+## 마감일·활동 스냅샷 확장 (V-15, API 0.10)
+
+`0006`은 task_activities에 nullable JSONB details를 추가한다. 기존 과제와 활동의 ID·상태·날짜·시각·무효화 연결을 보존하고 details만 null로 둔다. 현재 과제의 날짜나 순서를 과거 활동에 backfill하지 않는다. 이 변경 후 테이블 수는 9개 그대로이고 순차 마이그레이션은 7개다.
+
+새 활동의 details는 `{before, after, version}`이다. before/after는 `{scheduledDate,dueDate,status,dailyOrder}`이며 과제와 같은 달력 날짜·상태·날짜/순서 동치 규칙을 따른다. created 활동만 before=null이고 version은 생성·변경 후 양수 과제 버전이다. 새 과제 생성은 created 활동을 기록하고 due_date_changed를 추가한다. 기존 날짜·상태·순서 활동에도 같은 변경의 스냅샷을 넣는다. 같은 요청에서 여러 활동이 생기면 같은 before/after/version을 사용하며 순서 이동 구간은 각 행의 이전/이후 순서를 기록한다.
+
+활동의 과거 스냅샷은 이후 과제 변경으로 수정하지 않는다. 완료 취소는 기존처럼 완료 활동의 invalidated_by를 새 completion_undone ID에 연결하지만 기록을 지우거나 details를 현재 값으로 바꾸지 않는다. DB의 JSON 제약은 스냅샷 구조와 값 범위를 검증하고 소유자 FK를 유지한다. 날짜·활동·요청 재생 응답은 같은 트랜잭션에 커밋하며 동일 값·재생은 새 활동을 만들지 않는다.
+
+`GET /api/tasks/{taskId}/activities`는 먼저 소유 과제를 확인하고 owner·task_id 필터를 적용한다. occurred_at 내림차순·ID 오름차순으로 조회하고 owner·taskId·limit에 묶인 서명 커서로 페이지를 잇는다. 응답은 id·taskId·type·occurredAt·invalidatedBy·details만 포함하며 owner와 본문을 노출하지 않는다. details=null은 이전 값 미보존이라는 명시적인 데이터 상태다.
+
+활동·과제 목록의 커서 경계 시각에는 PostgreSQL의 마이크로초 정밀도를 보존한다. 응답의 ISO 밀리초 표시와 내부 커서 경계는 별개이며, 커서 생성이나 SQL 비교에서 DB 시각을 JavaScript Date로 반올림하지 않는다. 기존 3자리 소수부 서명 커서는 owner 범위의 같은 anchor 행과 밀리초 값이 일치할 때 DB 정밀도를 복원해 호환한다. 기존 정렬과 조회 scope는 유지하며 페이지는 변경 가능한 원본 조회이지 고정된 스냅샷이 아니다.
+
+`view=due&date=D`는 due_date=D, status IN (open,deferred), scheduled_date IS DISTINCT FROM D인 과제를 owner 범위에서 조회한다. 같은 날짜의 실행 과제와 중복하지 않고 마감만 있는 과제는 실행일 다섯 줄 한도에 포함하지 않는다. 마감일만 바꿀 때 과제의 daily_order를 다시 쓰거나 대상 마감일 개수 제한을 적용하지 않는다.
+
+체험 저장소는 schemaVersion 6에서 과제별 dueDate와 activities를 검증한다. 이전 schemaVersion 1~5에서 누락된 dueDate는 null로 보충하되 이미 존재하는 유효한 마감일은 보존한다. 이전 체험 형식은 활동을 보관하지 않았으므로 activities는 빈 배열로 전환하고 과거 생성/날짜 변경 기록을 만들어내지 않는다. 반면 실제 DB의 기존 활동은 details=null 행으로 그대로 조회한다. 이 두 이전 자료 상태를 구별한다.
+
+체험의 과제·활동·요청 재생 결과는 같은 상태 객체로 성공 저장될 때만 반영하며 sessionStorage 쓰기 실패 때 기존 원문을 보존한다. 읽기만으로 이전 형식 원문을 덮지 않는다. schemaVersion 6의 활동 구조·과제 참조·무효화 참조가 잘못되면 빈 자료로 복구하거나 조용히 재작성하지 않고 오류를 표시한다. 제품 DB나 인증 쿠키로 옮기지 않는다.
 
 기존 kind 필드의 task·appointment·event와 기본값 task는 기존 자료·API·요청 재생 호환을 위해 내부적으로 보존한다. 유형은 현재 사용 기능이 아니며 화면에서 선택·표시하지 않고 생성·수정 폼도 kind를 전송하지 않는다. `0002_task_priority_kind_and_status.sql`은 기존 제목·날짜·버전을 보존한 채 priority·kind를 추가한다. 유형 화면 제거 때문에 기존 API·DB 제약을 바꾸거나 kind 값을 재기록하지 않는다. 자유 기록은 별도 `0003_daily_journal.sql`로 추가하며 기존 과제 자료를 변경하지 않는다. 0003 자유 기록, 0004 일정, 0005 날짜별 순서를 포함하여 실행 테이블은 9개, 순차 마이그레이션은 6개다.
 

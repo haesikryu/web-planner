@@ -133,6 +133,7 @@ export function DailyTasks(props: Props) {
             if (event.nativeEvent.isComposing) return;
             if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey && !invalid && value.trim() && (dirty || activeEmpty))) { event.preventDefault(); commit(true); }
           }} />
+        {task?.dueDate && <time className="daily-task-due" dateTime={task.dueDate} title={`마감일 ${task.dueDate}`}><span aria-hidden="true">마감 {task.dueDate.slice(0, 4) === task.scheduledDate?.slice(0, 4) ? task.dueDate.slice(5) : task.dueDate}</span><span className="sr-only">마감일 {task.dueDate}</span></time>}
         <span className="daily-row-number"><span aria-hidden="true">{String(index + 1).padStart(2, "0")}</span><span className="sr-only">{index + 1}순위</span></span>
         {task && !activeEdit && <div className="daily-row-actions">
           <button type="button" className="daily-drag-handle" id={`${idPrefix}drag-${task.id}`} aria-label={`${task.title} 순서 이동`} aria-describedby={`${idPrefix}daily-drag-help`} aria-pressed={drag?.task.id === task.id} title="끌어서 순서 이동" disabled={actionDisabled || Boolean(draft) || tasks.length < 2 || Boolean(drag && drag.task.id !== task.id)}

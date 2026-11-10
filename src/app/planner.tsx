@@ -7,7 +7,7 @@ import { DiaryDatePicker } from "./diary-calendar";
 import { PlannerDay, type DayState } from "./planner-day";
 
 export type PlannerSession = { userId: string; timezone: string; settingsVersion: number; serverDate: string; csrfToken: string };
-export type PlannerTask = { id: string; title: string; status: TaskStatus; dailyOrder: number | null; scheduledDate: string | null; isUnprocessed: boolean; version: number };
+export type PlannerTask = { id: string; title: string; status: TaskStatus; dailyOrder: number | null; scheduledDate: string | null; dueDate: string | null; isUnprocessed: boolean; version: number };
 type PlannerRequest = (path: string, init?: RequestInit) => Promise<Response>;
 const serverRequest: PlannerRequest = (path, init) => fetch(path, init);
 const twoDayQuery = "(min-width: 700px) and (hover: hover) and (pointer: fine), (min-width: 900px) and (min-height: 600px) and (orientation: landscape)";
