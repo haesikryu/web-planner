@@ -11,7 +11,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:18
@@ -45,5 +45,6 @@ jobs:
       - run: npm run check
       - run: npm run build
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
-      - run: npm run test:e2e:product
+      - run: npm run test:e2e -- --workers=2 --global-timeout=300000
+      - run: npm run test:e2e:product -- --workers=2 --global-timeout=600000
+      - run: npm run test:e2e:demo -- --workers=2 --global-timeout=600000

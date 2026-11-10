@@ -8,6 +8,7 @@ type Draft = { entry: ScheduleEntry; slots: ScheduleSlot[]; loaded: boolean; loa
 type Pending = { owner: string; date: string; slots: ScheduleSlot[]; version: number; key: string; startedAt: number };
 export type ScheduleState = { dirty: boolean; busy: boolean; pending: boolean; pendingDate: string | null };
 type Props = {
+  idPrefix?: string; active?: boolean; canStartOperation?: () => boolean; onOperationEnd?: () => void;
   date: string; ownerId: string; disabled: boolean; demo: boolean;
   request: (path: string, init?: RequestInit) => Promise<Response>;
   verifySession: () => Promise<PlannerSession>;
@@ -21,11 +22,12 @@ const schedulePages = Array.from({ length: minutes.length / slotsPerPage }, (_, 
 const clockTime = (minute: number) => `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
 const sameSlots = (first: ScheduleSlot[], second: ScheduleSlot[]) => first.length === second.length && first.every((slot, index) => slot.startMinute === second[index].startMinute && slot.title === second[index].title);
 
-export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifySession, onStateChange }: Props) {
+export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifySession, onStateChange, idPrefix = "", active = true, canStartOperation, onOperationEnd }: Props) {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [busy, setBusy] = useState(false), [pending, setPending] = useState<Pending | null>(null);
   const [conflict, setConflict] = useState<ScheduleEntry | null>(null);
   const [timePage, setTimePage] = useState(0);
+  const timePageContext = useRef({ date, ownerId });
   const draftsRef = useRef(drafts), ownerRef = useRef(ownerId), sequences = useRef<Record<string, number>>({});
   const cacheOwner = useRef(ownerId), operation = useRef(false);
   draftsRef.current = drafts; ownerRef.current = ownerId;
@@ -61,12 +63,16 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
     setDrafts({}); setPending(null); setConflict(null); setBusy(false);
   }, [ownerId]);
   useEffect(() => {
+    if (timePageContext.current.date === date && timePageContext.current.ownerId === ownerId) return;
+    timePageContext.current = { date, ownerId };
     setTimePage(0);
-    if (!ownerId) return;
+  }, [date, ownerId]);
+  useEffect(() => {
+    if (!active || !ownerId) return;
     const cached = draftsRef.current[date];
     if (cached?.loaded && !sameSlots(cached.slots, cached.entry.slots)) return;
     void load(date, ownerId);
-  }, [date, ownerId, load]);
+  }, [date, ownerId, load, active]);
   useEffect(() => {
     onStateChange({ dirty: Boolean(ownerId) && Object.values(drafts).some(value => value.loaded && !sameSlots(value.slots, value.entry.slots)), busy, pending: Boolean(pending), pendingDate: pending?.date ?? null });
   }, [drafts, busy, pending, ownerId, onStateChange]);
@@ -74,6 +80,7 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
   async function send(value: Pending) {
     if (operation.current || busy || disabled || ownerRef.current !== value.owner) return;
     if (Date.now() - value.startedAt >= 86400000) { update(value.date, { error: "24시간이 지난 요청입니다. 저장 여부를 확인한 뒤 다시 저장해주세요." }); return; }
+    if (canStartOperation && !canStartOperation()) return;
     operation.current = true; setBusy(true); setPending(value); setConflict(null);
     update(value.date, { error: "", message: "일정을 저장하는 중입니다." });
     try {
@@ -99,10 +106,14 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
       setPending(null); setConflict(null);
     } catch (cause) {
       if (ownerRef.current === value.owner) update(value.date, { error: cause instanceof Error && !(cause instanceof TypeError) ? cause.message : "연결을 확인해주세요. 작성한 일정과 저장 요청을 보존했습니다.", message: "일정 저장 확인 필요" });
-    } finally { if (ownerRef.current === value.owner) { operation.current = false; setBusy(false); } }
+    } finally {
+      if (ownerRef.current === value.owner) { operation.current = false; setBusy(false); }
+      onOperationEnd?.();
+    }
   }
   async function confirmSaved() {
     if (!pending || operation.current || busy || disabled) return;
+    if (canStartOperation && !canStartOperation()) return;
     const value = pending; operation.current = true; setBusy(true);
     try {
       const latest = await read(value.date, value.owner);
@@ -111,20 +122,23 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
         update(value.date, { entry: latest, slots: latest.slots, loaded: true, error: "", message: "일정을 저장했습니다." }); setPending(null); setConflict(null);
       } else { setConflict(latest); update(value.date, { error: "저장된 일정과 내 일정이 다릅니다. 사용할 일정을 선택해주세요.", message: "일정 확인 필요" }); }
     } catch { if (ownerRef.current === value.owner) update(value.date, { error: "저장 여부를 확인하지 못했습니다. 작성한 일정을 보존했습니다." }); }
-    finally { if (ownerRef.current === value.owner) { operation.current = false; setBusy(false); } }
+    finally {
+      if (ownerRef.current === value.owner) { operation.current = false; setBusy(false); }
+      onOperationEnd?.();
+    }
   }
   let validation = "";
   let normalized: ScheduleSlot[] = [];
   try { normalized = normalizeScheduleSlots(page.slots.filter(slot => slot.title.trim())); }
   catch { validation = "각 일정은 줄바꿈 없이 200자 이내로 입력해주세요."; }
   const inputDisabled = disabled || busy || Boolean(pending) || !page.loaded || page.loading || !ownerId;
-  return <section className="schedule-section" id="diary-schedule" aria-label="하루 일정">
+  return <section className="schedule-section" id={`${idPrefix}diary-schedule`} aria-label="하루 일정">
     <div className="section-heading"><h2>하루 일정</h2><span className="schedule-range">06:00 — 24:00</span></div>
-    <p id="schedule-help" className="field-note">30분마다 한 칸, 시간대를 바꾸어 하루 일정을 확인하세요.</p>
+    <p id={`${idPrefix}schedule-help`} className="field-note">30분마다 한 칸, 시간대를 바꾸어 하루 일정을 확인하세요.</p>
     <div className="schedule-pagination">
       <button type="button" aria-label="이전 시간대" disabled={timePage === 0} onClick={() => setTimePage(value => value - 1)}>‹</button>
-      <label className="sr-only" htmlFor="schedule-time-page">일정 시간대</label>
-      <select id="schedule-time-page" value={timePage} onChange={event => setTimePage(Number(event.target.value))}>
+      <label className="sr-only" htmlFor={`${idPrefix}schedule-time-page`}>일정 시간대</label>
+      <select id={`${idPrefix}schedule-time-page`} value={timePage} onChange={event => setTimePage(Number(event.target.value))}>
         {schedulePages.map(index => <option key={index} value={index}>{clockTime(SCHEDULE_START + index * slotsPerPage * SCHEDULE_STEP)}–{clockTime(SCHEDULE_START + (index + 1) * slotsPerPage * SCHEDULE_STEP)}</option>)}
       </select>
       <span className="schedule-page-count">{timePage + 1} / {schedulePages.length}</span>
@@ -134,10 +148,10 @@ export function ScheduleEditor({ date, ownerId, disabled, demo, request, verifyS
       event.preventDefault(); if (inputDisabled || !dirty || validation) return;
       void send({ owner: ownerId, date, slots: normalized, version: page.entry.version, key: crypto.randomUUID(), startedAt: Date.now() });
     }}>
-      <fieldset className="schedule-grid" aria-label="30분 단위 일정표" aria-describedby="schedule-help">
+      <fieldset className="schedule-grid" aria-label="30분 단위 일정표" aria-describedby={`${idPrefix}schedule-help`}>
         {minutes.slice(timePage * slotsPerPage, (timePage + 1) * slotsPerPage).map(minute => <div className={`schedule-row${minute % 60 ? " half-hour" : ""}`} key={minute}>
-          <label htmlFor={`schedule-${minute}`}><span>{clockTime(minute)}</span><span className="schedule-until">–{clockTime(minute + SCHEDULE_STEP)}</span></label>
-          <input id={`schedule-${minute}`} aria-label={`${clockTime(minute)} 일정`} value={page.slots.find(slot => slot.startMinute === minute)?.title ?? ""}
+          <label htmlFor={`${idPrefix}schedule-${minute}`}><span>{clockTime(minute)}</span><span className="schedule-until">–{clockTime(minute + SCHEDULE_STEP)}</span></label>
+          <input id={`${idPrefix}schedule-${minute}`} aria-label={`${clockTime(minute)} 일정`} value={page.slots.find(slot => slot.startMinute === minute)?.title ?? ""}
             disabled={inputDisabled} autoComplete="off" placeholder="일정 입력" onChange={event => {
               const slots = page.slots.filter(slot => slot.startMinute !== minute);
               if (event.target.value) slots.push({ startMinute: minute, title: event.target.value });

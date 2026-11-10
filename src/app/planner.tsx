@@ -1,292 +1,137 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { title as normalizeTitle } from "@/domain/rules";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Temporal } from "@js-temporal/polyfill";
+import type { TaskStatus } from "@/domain/task-options";
 import { DiaryDatePicker } from "./diary-calendar";
-import { DailyTasks, type InlineTaskEdit } from "./daily-tasks";
-import { JournalEditor, type JournalState } from "./journal-editor";
-import { ScheduleEditor, type ScheduleState } from "./schedule-editor";
-import { type TaskStatus, taskStatus } from "@/domain/task-options";
+import { PlannerDay, type DayState } from "./planner-day";
 
 export type PlannerSession = { userId: string; timezone: string; settingsVersion: number; serverDate: string; csrfToken: string };
+export type PlannerTask = { id: string; title: string; status: TaskStatus; dailyOrder: number | null; scheduledDate: string | null; isUnprocessed: boolean; version: number };
 type PlannerRequest = (path: string, init?: RequestInit) => Promise<Response>;
 const serverRequest: PlannerRequest = (path, init) => fetch(path, init);
-export type PlannerTask = { id: string; title: string; status: TaskStatus; dailyOrder: number | null; scheduledDate: string | null; isUnprocessed: boolean; version: number };
-type Task = PlannerTask;
-const statusLabels: Record<TaskStatus, string> = { open: "진행 전", completed: "완료", deferred: "미룸", canceled: "취소" };
-const statusSymbols: Record<TaskStatus, string> = { open: "□", completed: "✓", deferred: "→", canceled: "×" };
-type View = "inbox" | "scheduled" | "overdue" | "completed";
-type Page = { items: Task[]; nextCursor: string | null };
-type Pending = { path: string; method: "POST" | "PATCH"; body: object; key: string; version?: number; startedAt: number; ownerId: string };
-const views: { id: View; label: string; empty: string }[] = [
-  { id: "scheduled", label: "오늘의 할 일", empty: "오늘에 놓을 일을 입력함에서 골라보세요." },
-  { id: "inbox", label: "입력함", empty: "떠오른 일을 가볍게 남겨보세요." },
-  { id: "overdue", label: "이전 날짜의 미완료", empty: "이전 날짜에 남은 일이 없습니다." },
-  { id: "completed", label: "오늘 완료", empty: "완료한 일은 이곳에 모입니다." }
-];
-const emptyPages = (): Record<View, Page> => ({ inbox: { items: [], nextCursor: null }, scheduled: { items: [], nextCursor: null }, overdue: { items: [], nextCursor: null }, completed: { items: [], nextCursor: null } });
-function listUrl(view: View, date: string, cursor?: string) {
-  const query = new URLSearchParams({ view: view === "scheduled" ? "day" : view });
-  if (view !== "inbox") query.set("date", date);
-  if (cursor) query.set("cursor", cursor);
-  return `/api/tasks?${query}`;
-}
-function describeChange(body: object): string {
-  return ["title" in body ? `제목: ${String(body.title)}` : "", "scheduledDate" in body ? `실행일: ${body.scheduledDate ?? "없음"}` : "",
-    "status" in body ? `상태: ${statusLabels[body.status as TaskStatus]}` : "",
-    "move" in body ? `순서: ${body.move === "up" ? "한 줄 위로" : "한 줄 아래로"}` : "",
-    "moveTo" in body ? "순서: 선택한 줄의 위치로 이동" : "",
-    "isUnprocessed" in body ? (body.isUnprocessed ? "미정리로 표시" : "정리 완료") : ""].filter(Boolean).join(" · ");
-}
+const twoDayQuery = "(min-width: 700px) and (hover: hover) and (pointer: fine), (min-width: 900px) and (min-height: 600px) and (orientation: landscape)";
+function subscribeLayout(change: () => void) { const query = window.matchMedia(twoDayQuery); query.addEventListener("change", change); return () => query.removeEventListener("change", change); }
+const readLayout = () => window.matchMedia(twoDayQuery).matches;
+const serverLayout = () => false;
+function nextDay(day: string) { return day === "9999-12-31" ? null : Temporal.PlainDate.from(day).add({ days: 1 }).toString(); }
+type Gate = { day: string; generation: number; offset: number };
 
 export function Planner({ initialSession, request = serverRequest, demo = false }: { initialSession: PlannerSession; request?: PlannerRequest; demo?: boolean }) {
-  const [session, setSession] = useState(initialSession), [pages, setPages] = useState(emptyPages);
-  const [draft, setDraft] = useState(""), [message, setMessage] = useState("목록을 불러오는 중입니다.");
-  const [error, setError] = useState(""), [busy, setBusy] = useState(false), [locked, setLocked] = useState(false);
-  const [pending, setPending] = useState<Pending | null>(null), [conflict, setConflict] = useState<Task | null>(null);
-  const [inlineEditing, setInlineEditingState] = useState<InlineTaskEdit | null>(null);
-  const inlineEditRef = useRef<InlineTaskEdit | null>(null);
-  const setInlineEditing = useCallback((value: InlineTaskEdit | null) => { inlineEditRef.current = value; setInlineEditingState(value); }, []);
-  const focusNextInput = useRef(false);
-  const [zone, setZone] = useState(initialSession.timezone);
+  const [session, setSession] = useState(initialSession);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const [mobilePage, setMobilePage] = useState<"plan" | "journal">("plan");
-  const [dragging, setDragging] = useState(false);
-  const dragActive = useRef(false);
-  const setDragActive = useCallback((active: boolean) => { dragActive.current = active; setDragging(active); }, []);
-  const [listsReady, setListsReady] = useState(false);
-  const [scheduleState, setScheduleState] = useState<ScheduleState>({ dirty: false, busy: false, pending: false, pendingDate: null });
-  const [journalState, setJournalState] = useState<JournalState>({ dirty: false, busy: false, pending: false, pendingDate: null });
-  const [editing, setEditing] = useState<{ task: Task; title: string; date: string; status: TaskStatus } | null>(null);
-  const currentOwner = useRef(initialSession.userId), operation = useRef(false), loadSequence = useRef(0);
-  const calendar = useRef(`${initialSession.timezone}|${initialSession.serverDate}`);
-  const loadedCalendar = useRef<{ date: string; timezone: string } | null>(null);
-  const statusEpoch = useRef(0);
-  const selectedDateRef = useRef<string | null>(null);
-  const captureInput = useRef<HTMLInputElement>(null), editInput = useRef<HTMLInputElement>(null);
-  const editingId = editing?.task.id;
-  useEffect(() => { if (editingId) editInput.current?.focus(); }, [editingId]);
+  const [focusedDate, setFocusedDate] = useState(initialSession.serverDate);
+  const [knownDates, setKnownDates] = useState<string[]>([initialSession.serverDate]);
+  const [states, setStates] = useState<Record<string, DayState>>({});
+  const [taskRevision, setTaskRevision] = useState(0);
+  const onTasksChanged = useCallback(() => setTaskRevision(value => value + 1), []);
+  const [authRecoveryRevision, setAuthRecoveryRevision] = useState(0);
+  const authFailure = useRef(false);
+  const [gate, setGate] = useState<Gate | null>(null);
+  const [signingOut, setSigningOut] = useState(false), [invalidated, setInvalidated] = useState(false), [error, setError] = useState("");
+  const statesRef = useRef(states), gateRef = useRef<Gate | null>(null), sessionRef = useRef(initialSession);
+  const visibleDates = useRef<string[]>([initialSession.serverDate]), invalidRef = useRef(false), logoutRef = useRef(false);
+  const owner = useRef(initialSession.userId);
+  const twoDays = useSyncExternalStore(subscribeLayout, readLayout, serverLayout);
+  const anchor = gate ? Temporal.PlainDate.from(gate.day).subtract({ days: gate.offset }).toString() : selectedDate ?? session.serverDate;
+  const following = nextDay(anchor);
+  const range = following ? [anchor, following] : [anchor];
+  const dayCount = twoDays && following ? 2 : 1;
+  const singleDate = gate?.day ?? (range.includes(focusedDate) ? focusedDate : anchor);
+  const shownDates = dayCount === 2 ? range : [singleDate];
+  visibleDates.current = range;
+  const dates = [...new Set([...knownDates, ...shownDates])];
+  const shownKey = shownDates.join(",");
+  useEffect(() => {
+    const visible = shownKey.split(",");
+    setKnownDates(old => visible.every(day => old.includes(day)) ? old : [...new Set([...old, ...visible])]);
+  }, [shownKey]);
 
-  const verifySession = useCallback(async (): Promise<PlannerSession> => {
-    const response = await request("/api/session", { cache: "no-store" });
-    if (!response.ok) { if (response.status === 401) { setLocked(true); if (!inlineEditRef.current) { setPages(emptyPages()); setListsReady(false); } } throw new Error(demo ? "테스트 저장소를 확인할 수 없습니다. 입력을 보존했습니다. 브라우저 저장 설정을 확인하고 다시 시도해주세요." : "로그인 상태를 확인할 수 없습니다. 입력을 보존했습니다. 다시 시도해주세요."); }
-    const fresh: PlannerSession = await response.json();
-    if (fresh.userId !== currentOwner.current) {
-      currentOwner.current = ""; setPages(emptyPages()); setDraft(""); setInlineEditing(null); setEditing(null); setPending(null); setConflict(null); setLocked(true);
-      window.location.replace("/"); throw new Error("계정이 변경되어 이전 입력을 지웠습니다.");
+  const onSessionFailure = useCallback((ownerId: string) => {
+    if (!invalidRef.current && ownerId === owner.current) authFailure.current = true;
+  }, []);
+  const onSession = useCallback((fresh: PlannerSession) => {
+    if (invalidRef.current) return sessionRef.current;
+    if (fresh.userId !== owner.current) { invalidRef.current = true; setInvalidated(true); return fresh; }
+    const old = sessionRef.current;
+    if (fresh.settingsVersion < old.settingsVersion) return old;
+    if (authFailure.current) { authFailure.current = false; setAuthRecoveryRevision(value => value + 1); }
+    sessionRef.current = fresh;
+    if (old.timezone !== fresh.timezone || old.settingsVersion !== fresh.settingsVersion || old.serverDate !== fresh.serverDate || old.csrfToken !== fresh.csrfToken) setSession(fresh);
+    return fresh;
+  }, []);
+  const claim = useCallback((day: string, generation: number) => {
+    if (invalidRef.current || logoutRef.current || (gateRef.current && gateRef.current.day !== day) || Object.entries(statesRef.current).some(([other, value]) => other !== day && value.blocked)) return false;
+    const value = { day, generation, offset: gateRef.current?.offset ?? Math.max(0, visibleDates.current.indexOf(day)) };
+    gateRef.current = value; setGate(value); return true;
+  }, []);
+  const report = useCallback((day: string, value: DayState) => {
+    if (invalidRef.current || value.ownerId !== owner.current) return;
+    const old = statesRef.current[day];
+    statesRef.current = { ...statesRef.current, [day]: value };
+    if (value.blocked && !gateRef.current) {
+      const acquired = { day, generation: value.generation, offset: Math.max(0, visibleDates.current.indexOf(day)) };
+      gateRef.current = acquired; setGate(acquired);
+    } else if (gateRef.current?.day === day && gateRef.current.generation === value.generation) {
+      if (!value.blocked) { gateRef.current = null; setGate(null); }
     }
-    const nextCalendar = `${fresh.timezone}|${fresh.serverDate}`;
-    if (calendar.current !== nextCalendar) { calendar.current = nextCalendar; if (!inlineEditRef.current && !dragActive.current) { loadedCalendar.current = null; setPages(emptyPages()); setListsReady(false); } }
-    setLocked(false); setSession(fresh); return fresh;
-  }, [request, demo, setInlineEditing]);
-  const reload = useCallback(async () => {
-    const sequence = ++loadSequence.current;
-    const fresh = await verifySession();
-    if (inlineEditRef.current || dragActive.current) return;
-    const date = scheduleState.pendingDate ?? journalState.pendingDate ?? selectedDate ?? fresh.serverDate;
-    const values = await Promise.all(views.map(async view => {
-      const response = await request(listUrl(view.id, date), { cache: "no-store" });
-      if (!response.ok) throw new Error("목록을 불러오지 못했습니다. 새로고침으로 다시 확인해주세요.");
-      return [view.id, await response.json()] as const;
-    }));
-    const confirmed = await verifySession();
-    if (confirmed.timezone !== fresh.timezone || confirmed.serverDate !== fresh.serverDate) throw new Error("날짜 기준이 변경되었습니다. 목록을 새로고침해주세요.");
-    if (sequence === loadSequence.current && currentOwner.current && !inlineEditRef.current && !dragActive.current) { loadedCalendar.current = { date, timezone: fresh.timezone }; setPages(Object.fromEntries(values) as Record<View, Page>); setListsReady(true); }
-  }, [verifySession, request, selectedDate, journalState.pendingDate, scheduleState.pendingDate]);
+    if (!old || Object.keys(value).some(key => old[key as keyof DayState] !== value[key as keyof DayState])) setStates(statesRef.current);
+  }, []);
+  const bindings = useRef<Record<string, { onClaim: (generation: number) => boolean; onStateChange: (state: DayState) => void }>>({});
+  function binding(day: string) {
+    if (!bindings.current[day]) bindings.current[day] = { onClaim: generation => claim(day, generation), onStateChange: state => report(day, state) };
+    return bindings.current[day];
+  }
+  const dirty = Object.values(states).some(value => value.dirty);
+  const working = signingOut || Object.values(states).some(value => value.working);
   useEffect(() => {
-    const epoch = statusEpoch.current;
-    reload().then(() => { if (epoch === statusEpoch.current) setMessage(demo ? "이 탭에 저장된 테스트 목록입니다." : "서버에 저장된 목록입니다."); })
-      .catch(cause => { if (epoch === statusEpoch.current) setError(cause.message); });
-    const refresh = () => { if (!document.hidden && !operation.current) { const epoch = statusEpoch.current; reload().catch(cause => { if (epoch === statusEpoch.current) setError(cause.message); }); } };
-    window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", refresh);
-    const timer = window.setInterval(refresh, 60000);
-    return () => { window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh); window.clearInterval(timer); loadSequence.current++; };
-  }, [reload, demo]);
-  useEffect(() => {
-    if (!draft && !pending && !editing && !inlineEditing && !journalState.dirty && !journalState.pending && !scheduleState.dirty && !scheduleState.pending && zone === session.timezone) return;
-    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
-  }, [draft, pending, editing, inlineEditing, journalState.dirty, journalState.pending, scheduleState.dirty, scheduleState.pending, zone, session.timezone]);
-
-  async function send(value: Pending) {
-    if (operation.current || value.ownerId !== currentOwner.current) return;
-    if (Date.now() - value.startedAt >= 86400000) { setError("24시간이 지난 요청은 자동 재전송하지 않습니다. 목록에서 저장 여부를 확인해주세요."); return; }
-    operation.current = true; statusEpoch.current++; setBusy(true); setError(""); setMessage("저장 중입니다."); setPending(value);
-    let serverConfirmed = false;
-    try {
-      const fresh = await verifySession();
-      const response = await request(value.path, { method: value.method, headers: { "Content-Type": "application/json", "X-CSRF-Token": fresh.csrfToken,
-        "Idempotency-Key": value.key, ...(value.version ? { "If-Match": `"v${value.version}"` } : {}) }, body: JSON.stringify(value.body) });
-      if (response.status === 412 && value.path.startsWith("/api/tasks/")) {
-        const latest = await request(value.path, { cache: "no-store" });
-        await verifySession();
-        if (latest.ok) { setConflict(await latest.json()); setMessage("수정 충돌 확인 필요"); setError("다른 곳에서 변경한 내용이 있습니다. 최신 내용과 내 변경을 확인해주세요."); return; }
-      }
-      if (!response.ok) {
-        if ([400, 404, 422, 428].includes(response.status)) {
-          setPending(null);
-          const failure = await response.json().catch(() => null);
-          if (failure?.code === "DAILY_TASK_LIMIT") { await reload(); throw new Error("이 날짜의 할 일은 최대 5개입니다. 기존 할 일의 날짜를 옮긴 뒤 추가해주세요."); }
-          throw new Error("입력이나 항목을 확인해주세요. 저장하지 못했습니다.");
-        }
-        if (response.status === 412 && value.path === "/api/settings") { setPending(null); await verifySession(); throw new Error("설정이 다른 곳에서 변경되었습니다. 최신 설정을 확인한 후 다시 적용해주세요."); }
-        throw new Error("저장 여부를 확인할 수 없습니다. 같은 요청으로 재시도하거나 목록을 확인해주세요.");
-      }
-      serverConfirmed = true;
-      const confirmed = await verifySession();
-      if (value.path === "/api/settings") setZone(confirmed.timezone);
-      setPending(null); setConflict(null);
-      if (value.method === "POST") setDraft("");
-      setEditing(null); setInlineEditing(null); setMessage("status" in value.body && value.body.status === "completed" && selectedDate && selectedDate !== confirmed.serverDate ? `완료했습니다. ${confirmed.serverDate}의 완료 기록에서 확인하세요.` : "저장 완료");
-      await reload();
-    } catch (cause) { setMessage(serverConfirmed ? "저장 완료 · 목록을 다시 확인해주세요." : "저장 확인 필요"); setError(cause instanceof Error && !(cause instanceof TypeError) ? cause.message : "저장 여부를 확인할 수 없습니다. 입력을 보존했습니다. 같은 요청으로 다시 시도해주세요."); }
-    finally { operation.current = false; setBusy(false); }
-  }
-  function mutate(path: string, method: Pending["method"], body: object, version?: number, fromEditor = false) {
-    if (pending || locked || dragActive.current || journalState.busy || journalState.pending || scheduleState.busy || scheduleState.pending || ((editing || inlineEditing) && !fromEditor)) return;
-    void send({ path, method, body, version, key: crypto.randomUUID(), startedAt: Date.now(), ownerId: currentOwner.current });
-  }
-  function update(task: Task, body: object, fromEditor = false) { mutate(`/api/tasks/${task.id}`, "PATCH", body, task.version, fromEditor); }
-  async function more(view: View) {
-    const epoch = statusEpoch.current, sequence = loadSequence.current, selection = selectedDateRef.current;
-    try {
-      const cursor = pages[view].nextCursor; if (!cursor) return;
-      const fresh = await verifySession(), response = await request(listUrl(view, selection ?? fresh.serverDate, cursor), { cache: "no-store" });
-      if (!response.ok) throw new Error("목록이 변경되었습니다. 새로고침해주세요.");
-      const next: Page = await response.json(), confirmed = await verifySession();
-      if (confirmed.timezone !== fresh.timezone || confirmed.serverDate !== fresh.serverDate) throw new Error("날짜 기준이 변경되었습니다. 목록을 새로고침해주세요.");
-      if (sequence !== loadSequence.current || selection !== selectedDateRef.current) return;
-      setPages(old => ({ ...old, [view]: { items: [...new Map([...old[view].items, ...next.items].map(item => [item.id, item])).values()], nextCursor: next.nextCursor } }));
-    } catch (cause) { if (epoch === statusEpoch.current && sequence === loadSequence.current && selection === selectedDateRef.current) setError(cause instanceof Error ? cause.message : "목록을 확인해주세요."); }
-  }
-  async function refreshPage() {
-    const epoch = ++statusEpoch.current;
-    try { await reload(); if (epoch === statusEpoch.current) { setMessage("최신 목록을 확인했습니다."); setError(""); } }
-    catch (cause) { if (epoch === statusEpoch.current) setError(cause instanceof Error ? cause.message : "목록을 확인해주세요."); }
+  }, [dirty]);
+  function selectDate(value: string) {
+    if (gateRef.current || logoutRef.current || invalidRef.current) return;
+    setSelectedDate(value === sessionRef.current.serverDate ? null : value); setFocusedDate(value); setError("");
   }
   async function signOut() {
-    if (operation.current || dragActive.current || journalState.busy || scheduleState.busy) return;
-    if ((draft || pending || editing || inlineEditing || journalState.dirty || journalState.pending || scheduleState.dirty || scheduleState.pending || zone !== session.timezone) && !window.confirm(demo ? "저장하지 않은 입력이 있습니다. 테스트를 나가면 입력을 지웁니다. 계속할까요?" : "저장하지 않은 입력이 있습니다. 로그아웃하면 입력을 지웁니다. 계속할까요?")) return;
-    operation.current = true; setBusy(true);
+    if (logoutRef.current || Object.values(statesRef.current).some(value => value.working)) return;
+    if (Object.values(statesRef.current).some(value => value.dirty) && !window.confirm(demo ? "저장하지 않은 입력이 있습니다. 테스트를 나가면 입력을 지웁니다. 계속할까요?" : "저장하지 않은 입력이 있습니다. 로그아웃하면 입력을 지웁니다. 계속할까요?")) return;
+    logoutRef.current = true; setSigningOut(true); setError("");
     try {
-      const fresh = await verifySession();
-      const result = await request("/api/logout", { method: "POST", headers: { "X-CSRF-Token": fresh.csrfToken } });
-      if (!result.ok) throw new Error("로그아웃을 확인할 수 없습니다. 다시 시도해주세요.");
-      currentOwner.current = ""; setPages(emptyPages()); setDraft(""); setInlineEditing(null); setPending(null); setEditing(null); setLocked(true); window.location.replace("/");
+      const check = await request("/api/session", { cache: "no-store" });
+      if (!check.ok) throw new Error("로그인 상태를 확인하지 못했습니다. 입력을 보존했습니다.");
+      const fresh: PlannerSession = await check.json(); onSession(fresh);
+      if (fresh.userId !== owner.current) { window.location.replace("/"); return; }
+      const response = await request("/api/logout", { method: "POST", headers: { "X-CSRF-Token": fresh.csrfToken } });
+      if (!response.ok) throw new Error("로그아웃을 확인하지 못했습니다. 다시 시도해주세요.");
+      invalidRef.current = true; setInvalidated(true); window.location.replace("/");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "연결을 확인해주세요."); }
-    finally { operation.current = false; setBusy(false); }
+    finally { logoutRef.current = false; setSigningOut(false); }
   }
-  const disabled = busy || Boolean(pending) || locked || journalState.busy || journalState.pending || scheduleState.busy || scheduleState.pending;
-  const date = Temporal.PlainDate.from(inlineEditing?.task.scheduledDate ?? (dragging ? pages.scheduled.items[0]?.scheduledDate : null) ?? scheduleState.pendingDate ?? journalState.pendingDate ?? selectedDate ?? session.serverDate);
-  const isToday = date.toString() === session.serverDate;
-  const navigationDisabled = disabled || dragging || Boolean(editing) || Boolean(inlineEditing);
-  const visibleDate = date.toString();
-  useEffect(() => {
-    // A canceled edit/drag must release the old day snapshot after a clock/zone change.
-    if (dragging || inlineEditing || !loadedCalendar.current || (loadedCalendar.current.date === visibleDate && loadedCalendar.current.timezone === session.timezone)) return;
-    loadedCalendar.current = null; setPages(emptyPages()); setListsReady(false);
-    void reload().catch(cause => setError(cause.message));
-  }, [dragging, inlineEditing, visibleDate, session.timezone, reload]);
-  useEffect(() => {
-    if (!busy && !pending && listsReady && focusNextInput.current && !draft) { focusNextInput.current = false; captureInput.current?.focus(); }
-  }, [busy, pending, listsReady, draft]);
-  function selectDate(value: string) {
-    if (operation.current || dragActive.current || pending || locked || editing || inlineEditing || journalState.busy || journalState.pending || scheduleState.busy || scheduleState.pending) return;
-    const next = value === session.serverDate ? null : value;
-    if (selectedDateRef.current === next) return;
-    selectedDateRef.current = next; loadedCalendar.current = null; loadSequence.current++; statusEpoch.current++;
-    setSelectedDate(next); setPages(emptyPages()); setListsReady(false); setError(""); setMessage("날짜의 기록을 불러오는 중입니다.");
-  }
-  function viewLabel(view: View) {
-    if (view === "scheduled" && !isToday) return "이날의 할 일";
-    if (view === "completed" && !isToday) return "이날 완료";
-    return views.find(item => item.id === view)?.label ?? "";
-  }
-  let draftError = "";
-  if (draft) { try { normalizeTitle(draft); } catch { draftError = "제목은 공백만 사용할 수 없으며 줄바꿈 없이 1~200자로 입력해주세요."; } }
-  function createDailyTask(focusNext: boolean) {
-    if (operation.current || navigationDisabled || !listsReady || pages.scheduled.items.length >= 5 || pages.scheduled.nextCursor) return;
-    try {
-      const title = normalizeTitle(draft); focusNextInput.current = focusNext;
-      mutate("/api/tasks", "POST", { title, scheduledDate: date.toString(), isUnprocessed: false });
-    } catch { setError("제목은 줄바꿈 없이 1~200자로 입력해주세요."); }
-  }
-  function renameDailyTask(task: Task, value: string) {
-    if (disabled || editing) return;
-    try { update(task, { title: normalizeTitle(value) }, true); }
-    catch { setError("제목은 줄바꿈 없이 1~200자로 입력해주세요."); }
-  }
-  function taskSection(view: typeof views[number]) { return <section className="task-section" key={view.id} id={`diary-${view.id}`} aria-label={viewLabel(view.id)}>
-      <div className="section-heading"><h2>{viewLabel(view.id)}</h2><span className="task-count">{pages[view.id].items.length}{pages[view.id].nextCursor ? "+" : ""}</span></div>
-      {!pages[view.id].items.length && <p className="empty-state">{view.id === "scheduled" ? "작은 일부터 하나씩 채워보세요." : view.empty}</p>}
-      <ul>{pages[view.id].items.map(task => <li key={task.id} className={`task-card ${task.status}`} data-task-id={task.id}>
-        <div className="task-title-row"><p className="task-title"><span className="bullet-symbol" role="img" aria-label={statusLabels[task.status]}>{statusSymbols[task.status]}</span><span>{task.title}</span></p></div>
-        <p className="task-meta">{task.scheduledDate ? `실행일 ${task.scheduledDate}` : "날짜 미정"}{task.isUnprocessed ? " · 미정리" : ""}</p>
-        <div className="task-controls"><label>상태<select aria-label={`${task.title} 상태`} value={task.status} disabled={navigationDisabled} onChange={event => update(task, { status: taskStatus(event.target.value) })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{statusSymbols[value as TaskStatus]} {label}</option>)}</select></label></div>
-        {task.status === "deferred" && <p className="task-state-note">→ 미룸 · 실행일은 수정에서 변경할 수 있습니다.</p>}
-        <div className="task-actions"><button type="button" disabled={navigationDisabled} onClick={() => update(task, { status: task.status === "completed" ? "open" : task.status === "canceled" ? "open" : "completed" })}>{task.status === "completed" ? "완료 취소" : task.status === "canceled" ? "취소 되돌리기" : "완료"}</button>
-          {(task.status === "open" || task.status === "deferred") && (view.id !== "scheduled") && <button type="button" disabled={navigationDisabled} onClick={() => update(task, { scheduledDate: date.toString(), isUnprocessed: false })}>{isToday ? "오늘로" : "이날로"}</button>}
-          {task.isUnprocessed && (task.scheduledDate !== null || task.status === "completed") && <button type="button" disabled={navigationDisabled} onClick={() => update(task, { isUnprocessed: false })}>정리 완료</button>}
-          <button type="button" disabled={navigationDisabled} onClick={() => setEditing({ task, title: task.title, date: task.scheduledDate ?? "", status: task.status })}>수정</button></div>
-      </li>)}</ul>{pages[view.id].nextCursor && <button type="button" className="quiet-button" disabled={navigationDisabled} onClick={() => void more(view.id)}>더 보기</button>}
-    </section>; }
+  const firstDate = Temporal.PlainDate.from(dayCount === 2 ? anchor : singleDate);
+  const label = (day: string) => { const value = Temporal.PlainDate.from(day); return `${value.year}년 ${value.month}월 ${value.day}일`; };
+  if (invalidated) return <main id="main" className="planner"><p role="status">계정을 확인하고 있습니다.</p></main>;
   return <main id="main" className="planner diary-app">
-    <div className="diary-toolbar"><div><p className="eyebrow">A PAGE FOR EVERY DAY</p><p className="diary-title">나의 다이어리<span className="diary-edition">{date.year} EDITION</span></p></div>
-      <div className="diary-toolbar-actions"><button className="quick-entry" type="button" disabled={navigationDisabled} onClick={() => { setMobilePage("plan"); requestAnimationFrame(() => captureInput.current?.focus()); }}>＋ 빠른 입력</button><button className="quiet-button" type="button" disabled={busy || dragging || journalState.busy || scheduleState.busy} onClick={() => void signOut()}>{demo ? "테스트 나가기" : "로그아웃 / 계정 바꾸기"}</button></div></div>
+    <div className="diary-toolbar"><div><p className="eyebrow">A PAGE FOR EVERY DAY</p><p className="diary-title">나의 다이어리<span className="diary-edition">{firstDate.year} EDITION</span></p></div>
+      <div className="diary-toolbar-actions"><button className="quick-entry" type="button" disabled={Boolean(gate) || signingOut} onClick={() => {
+        const targetDay = shownDates.includes(focusedDate) ? focusedDate : shownDates[0];
+        const panel = document.querySelector<HTMLElement>(`.planner-day[data-date="${targetDay}"]`);
+        panel?.querySelector<HTMLButtonElement>('[role="tab"][data-page="plan"]')?.click();
+        requestAnimationFrame(() => panel?.querySelector<HTMLInputElement>('.daily-task-row.empty input:not(:disabled)')?.focus());
+      }}>＋ 빠른 입력</button><button className="quiet-button" type="button" disabled={working} onClick={() => void signOut()}>{demo ? "테스트 나가기" : "로그아웃 / 계정 바꾸기"}</button></div></div>
     {demo && <aside className="demo-notice" aria-label="테스트 모드 안내"><strong>테스트 다이어리</strong><p className="demo-notice-detail">이 탭에 임시 저장됩니다. 새로고침 후에도 유지되며 다른 기기와 동기화되지 않습니다.</p></aside>}
-    <div className="diary-shell">
-      <div className="diary-content">
-        <div className="diary-page-navigation"><p className="diary-current-date">{date.year}년 {date.month}월 {date.day}일 <span>{isToday ? "오늘의 페이지" : "선택한 페이지"}</span></p>
-          <div><DiaryDatePicker date={date.toString()} today={session.serverDate} disabled={navigationDisabled} onSelect={selectDate} /><button type="button" aria-label="이전 날" disabled={navigationDisabled || date.toString() === "0001-01-01"} onClick={() => selectDate(date.subtract({ days: 1 }).toString())}>←</button><button type="button" aria-label="다음 날" disabled={navigationDisabled || date.toString() === "9999-12-31"} onClick={() => selectDate(date.add({ days: 1 }).toString())}>→</button></div>
-        </div>
-    <div className="planner-notice"><p className="save-status" role="status" aria-live="polite">{message}</p><button type="button" className="quiet-button" disabled={busy || dragging || Boolean(inlineEditing)} onClick={() => void refreshPage()}>목록 새로고침</button></div>
-    <div className="planner-feedback">
+    <div className="diary-page-navigation"><p className="diary-current-date">{label(firstDate.toString())}{dayCount === 2 && following ? ` — ${label(following)}` : ""}<span>{dayCount === 2 ? "이틀 보기" : "하루 보기"}</span></p>
+      <div><DiaryDatePicker date={firstDate.toString()} today={session.serverDate} disabled={Boolean(gate) || signingOut} onSelect={selectDate} />
+        <button type="button" aria-label="이전 날" disabled={Boolean(gate) || signingOut || firstDate.toString() === "0001-01-01"} onClick={() => selectDate(firstDate.subtract({ days: 1 }).toString())}>←</button>
+        <button type="button" aria-label="다음 날" disabled={Boolean(gate) || signingOut || firstDate.toString() === "9999-12-31"} onClick={() => selectDate(firstDate.add({ days: 1 }).toString())}>→</button>
+        {dayCount === 1 && following && <button type="button" className="diary-day-switch" disabled={Boolean(gate) || signingOut} onClick={() => setFocusedDate(singleDate === anchor ? following : anchor)}>다른 날짜 보기</button>}
+      </div>
+    </div>
     {error && <p role="alert" className="error-note">{error}</p>}
-    {pending && !conflict && <div className="recovery"><p>입력과 저장 요청을 이 화면에 보관하고 있습니다.</p><button type="button" disabled={busy || locked} onClick={() => void send(pending)}>같은 요청 재시도</button><button type="button" disabled={busy} onClick={() => { if (window.confirm("목록에서 저장 여부를 확인했나요? 확인을 마치면 이전 요청을 닫습니다.")) { setPending(null); setMessage("이전 요청을 닫았습니다. 목록과 입력을 확인해주세요."); } }}>목록 확인 후 요청 닫기</button></div>}
-    {conflict && pending && <section className="recovery" aria-label="수정 충돌 확인"><h2>최신 내용과 비교</h2><p>현재 저장된 제목: {conflict.title}</p><p>현재 상태: {statusLabels[conflict.status]} · 실행일: {conflict.scheduledDate ?? "없음"}</p>
-      <p>내 변경: {describeChange(pending.body)}</p>
-      <button type="button" onClick={() => { setPending(null); setConflict(null); setEditing(null); setInlineEditing(null); void reload().catch(cause => setError(cause.message)); }}>최신 내용 사용</button>
-      <button type="button" onClick={() => { const retry = { ...pending, key: crypto.randomUUID(), version: conflict.version, startedAt: Date.now() }; setConflict(null); void send(retry); }}>내 변경 다시 적용</button></section>}
-    {editing && <form className="edit-panel" onSubmit={event => { event.preventDefault(); try { update(editing.task, { title: normalizeTitle(editing.title), scheduledDate: editing.date || null, status: editing.status }, true); } catch { setError("제목과 날짜를 확인해주세요."); } }}>
-      <h2>할 일 수정</h2><label>제목<input ref={editInput} value={editing.title} disabled={disabled} onChange={event => setEditing({ ...editing, title: event.target.value })} /></label>
-      <label>실행 예정일<input type="date" value={editing.date} disabled={disabled} onChange={event => setEditing({ ...editing, date: event.target.value })} /></label>
-      <div className="entry-options"><label>진행 상태<select aria-label="진행 상태" value={editing.status} disabled={disabled} onChange={event => setEditing({ ...editing, status: taskStatus(event.target.value) })}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{statusSymbols[value as TaskStatus]} {label}</option>)}</select></label></div>
-      <p className="field-note">미룸은 상태 표시입니다. 날짜를 옮기려면 실행 예정일도 변경해주세요.</p>
-      <button type="submit" disabled={disabled}>변경 저장</button><button type="button" disabled={busy} onClick={() => setEditing(null)}>수정 닫기</button></form>}
-    </div>
-    <div className="diary-mobile-tabs" role="tablist" aria-label="다이어리 페이지">
-      <button type="button" id="plan-tab" role="tab" aria-selected={mobilePage === "plan"} aria-controls="plan-page" disabled={dragging} onClick={() => setMobilePage("plan")}>할 일·일정</button>
-      <button type="button" id="journal-tab" role="tab" aria-selected={mobilePage === "journal"} aria-controls="journal-page" disabled={dragging} onClick={() => setMobilePage("journal")}>자유 기록</button>
-    </div>
-    <div className="diary-book" data-mobile-page={mobilePage}>
-      <div className="diary-page diary-page-left" id="plan-page">
-        <header className="diary-day-heading"><span className="diary-day-number">{String(date.day).padStart(2, "0")}</span><div><p className="diary-weekday">{["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"][date.dayOfWeek - 1]} · {date.month}월</p><h1>{isToday ? "오늘을 가볍게." : "하루를 차분하게."}</h1><p className="date-line">{date.toString()} · {session.timezone}</p></div></header>
-        <p className="page-intention">모든 일을 끝내기보다, 중요한 일에 한 걸음.</p>
-        <details className="task-symbol-guide"><summary>기호 안내</summary><div className="symbol-legend"><span>□ 진행 전</span><span>✓ 완료</span><span>→ 미룸</span><span>× 취소</span></div></details>
-
-
-        <DailyTasks tasks={pages.scheduled.items} label={viewLabel("scheduled")} ready={listsReady} disabled={disabled || Boolean(editing)} hasMore={Boolean(pages.scheduled.nextCursor)}
-          draft={draft} onDraft={setDraft} draftError={draftError} inline={inlineEditing} onInline={setInlineEditing} inputRef={captureInput}
-          onCreate={createDailyTask} onRename={renameDailyTask} onStatus={(task, status) => update(task, { status })} onMove={(task, moveTo) => update(task, { moveTo })} onDragActive={setDragActive}
-          onEdit={task => setEditing({ task, title: task.title, date: task.scheduledDate ?? "", status: task.status })} onMore={() => void more("scheduled")} />
-        <ScheduleEditor date={date.toString()} ownerId={currentOwner.current} disabled={busy || dragging || Boolean(pending) || locked || Boolean(editing) || Boolean(inlineEditing) || journalState.busy || journalState.pending} demo={demo} request={request} verifySession={verifySession} onStateChange={setScheduleState} />
-        <details className="archive-tasks" id="diary-archive"><summary>이전 기록과 입력함</summary>
-        {taskSection(views[1])}
-        {taskSection(views[3])}
-        <p className="completion-note">완료한 일은 실제로 마친 날짜의 기록에 모입니다.</p>
-        {taskSection(views[2])}
-        </details>
-        <footer className="diary-page-footer"><span>DAILY PLAN</span><span className="page-number">{String(date.day * 2 - 1).padStart(2, "0")}</span></footer>
-      </div>
-      <div className="diary-page diary-page-right" id="journal-page">
-        <JournalEditor date={date.toString()} ownerId={currentOwner.current} disabled={busy || dragging || Boolean(pending) || locked || Boolean(editing) || Boolean(inlineEditing) || scheduleState.busy || scheduleState.pending} demo={demo} request={request} verifySession={verifySession} onStateChange={setJournalState} />
-        <footer className="diary-page-footer"><span>DAILY NOTES</span><span className="page-number">{String(date.day * 2).padStart(2, "0")}</span></footer>
-      </div>
-    </div>
-    <details className="timezone-panel"><summary>기준 시간대 설정 · {session.timezone}</summary><form onSubmit={event => { event.preventDefault(); mutate("/api/settings", "PATCH", { timezone: zone }, session.settingsVersion); }}>
-      <label htmlFor="timezone">IANA 시간대</label><input id="timezone" value={zone} disabled={navigationDisabled} onChange={event => setZone(event.target.value)} placeholder="Asia/Seoul" /><button disabled={navigationDisabled} type="submit">시간대 적용</button><p className="timezone-help">기존 실행일은 유지하고, 오늘의 기준과 완료 기록 표시를 바꿉니다.</p></form></details>
-      </div>
+    <div className="diary-days" data-visible-days={dayCount} data-single-panel={singleDate === anchor ? "primary" : "secondary"}>
+      {dates.map(day => <section key={day} className="planner-day" data-panel={day === anchor ? "primary" : day === following ? "secondary" : "cached"} data-date={day} aria-label={`${label(day)} 다이어리`} hidden={!shownDates.includes(day)} onFocusCapture={() => setFocusedDate(day)}>
+        <PlannerDay initialSession={session} request={request} demo={demo} day={day} active={shownDates.includes(day)} primary={day === anchor} externalDisabled={signingOut || Boolean(gate && gate.day !== day)} onSession={onSession} onSessionFailure={onSessionFailure} authRecoveryRevision={authRecoveryRevision} taskRevision={taskRevision} onTasksChanged={onTasksChanged} {...binding(day)} />
+      </section>)}
     </div>
   </main>;
 }

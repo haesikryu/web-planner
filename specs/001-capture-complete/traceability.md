@@ -32,8 +32,8 @@ V-12는 다음 테스트와 연결한다. 기존 검증 그룹을 대체하지 �
 | high·medium·low 검증, 상태 전환·목록 필터·입력함 복귀·동일 값·재생, 내부 kind의 기존 API 계약 보존 | `src/domain/task-options.ts`, `src/server/product/tasks.ts`, `contracts/openapi.json`, `tests/unit/product-api.test.ts` |
 | 기존 DB 항목에 medium·task 추가, 제목·실행일·상태·버전 보존과 새 제약 | `migrations/0002_task_priority_kind_and_status.sql`, `tests/unit/task-options-migration.test.ts` |
 | v1 체험 자료 보존, 성공한 저장에서만 스키마 변경, 실패 보존, API와 같은 입력함·상태 규칙 | `src/app/demo/transport.ts`, `tests/unit/demo-transport.test.ts` |
-| 고정 다섯 줄·첫 빈 줄 순차 활성화·Enter/Tab/blur/행 저장·IME, inline 원버전 충돌·다른 변경 잠금·계정/날짜 보호 | `src/app/daily-tasks.tsx`, `src/app/planner.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
-| 사각형 상태 메뉴·□/✓/→/×·Escape/키보드/터치, 드래그/키보드 이동·취소·포커스 복원·새로고침, priority·kind 화면 제거와 내부 보존 | `src/app/daily-tasks.tsx`, `src/app/planner.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 고정 다섯 줄·첫 빈 줄 순차 활성화·Enter/Tab/blur/행 저장·IME, inline 원버전 충돌·다른 변경 잠금·계정/날짜 보호 | `src/app/daily-tasks.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 사각형 상태 메뉴·□/✓/→/×·Escape/키보드/터치, 드래그/키보드 이동·취소·포커스 복원·새로고침, priority·kind 화면 제거와 내부 보존 | `src/app/daily-tasks.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
 | dailyOrder 양수/null backfill, 원본·버전·초과 자료 보존, day 정렬·새 커서, 날짜 이동 끝 배치 | `migrations/0005_task_daily_order.sql`, `src/server/db/schema.ts`, `tests/unit/task-order-migration.test.ts`, `src/server/product/tasks.ts`, `tests/unit/product-api.test.ts` |
 | 단독 moveTo와 move 호환 검증·소유권·If-Match·구간 버전/활동의 원자성·자기 대상 no-op·동일 키 재생·경합·롤백 | `src/domain/task-order.ts`, `src/server/product/tasks.ts`, `contracts/openapi.json`, `tests/unit/product-api.test.ts`, `tests/unit/demo-transport.test.ts` |
 
@@ -65,7 +65,7 @@ V-13의 테스트 연결은 검증 범위를 명시하며 통과 결과를 대�
 | 36칸·360~1410·30분 배수·중복·정렬·NFC 제목·빈 배열 검증 | `src/domain/schedule.ts`, `tests/unit/schedule.test.ts`, `contracts/openapi.json` |
 | schedule_entries와 기존 자료 보존·DB 제약 | `migrations/0004_daily_schedule.sql`, `src/server/db/schema.ts`, `tests/unit/schedule-migration.test.ts` |
 | owner·날짜 분리, v0·no-op·조건부 쓰기·최초 저장 경합·재생·412·롤백 | `src/app/api/schedule/[date]/route.ts`, `src/server/product/schedule.ts`, `tests/unit/product-api.test.ts` |
-| 4칸×9페이지의 36개 입력 이름·첫/마지막 행·날짜별 저장/초안·페이지 왕복·새로고침·외부 스크롤/잘림 | `src/app/schedule-editor.tsx`, `src/app/planner.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 4칸×9페이지의 36개 입력 이름·첫/마지막 행·날짜별 저장/초안·페이지 왕복·새로고침·외부 스크롤/잘림 | `src/app/schedule-editor.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
 | 일정 응답 유실 후 같은 키/version 재생, 412 두 선택, 계정 전환 초안 폐기, 할 일 수정 중 잠금 | `src/app/schedule-editor.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
 | 체험 일정 저장과 API 미호출, 기존 저장 자료·저장 실패 보존 | `src/app/demo/transport.ts`, `tests/unit/demo-transport.test.ts`, `tests/e2e/demo.spec.ts` |
 
@@ -74,12 +74,27 @@ V-13의 테스트 연결은 검증 범위를 명시하며 통과 결과를 대�
 
 ## 날짜 선택·화면 높이 검수 연결
 
-V-04·V-10은 항상 보이는 `날짜 선택`과 월 탐색·오늘 선택을, V-12·V-13·V-14는 선택 날짜의 세 영역 동기화를 함께 검수한다. NFR-02에는 620px 이하의 접근 가능한 책 페이지 탭, 키보드 드래그 대안, 다이얼로그 포커스 복원과 1366×768·707×978·360×800의 외부 스크롤 및 콘텐츠 잘림 검사를 연결한다.
+V-04·V-10은 항상 보이는 `날짜 선택`과 월 탐색·오늘 선택을, V-12·V-13·V-14는 선택 날짜의 세 영역 동기화를 함께 검수한다. NFR-02에는 날짜 수와 패널 폭을 구별한 접근 가능한 책 페이지 탭, 키보드 드래그 대안, 다이얼로그 포커스 복원과 PC·태블릿 방향·휴대폰별 외부 스크롤 및 콘텐츠 잘림 검사를 연결한다.
 
 | 검수 범위 | 구현·검증 연결 |
 |---|---|
-| 상단 날짜 버튼·달력 대화상자·월만 탐색·날짜 선택과 세 영역 동기화 | `src/app/diary-calendar.tsx`, `src/app/planner.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 상단 날짜 버튼·달력 대화상자·월만 탐색·날짜 선택과 세 영역 동기화 | `src/app/diary-calendar.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
 | 마우스/실제 touch 포인터 이동·키보드 확정/취소·장거리 이동·새로고침 | `src/app/daily-tasks.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
-| 외부 문서 스크롤 없음·5줄/4칸/저장 버튼 표시·620px 책 페이지 탭·날짜 대화상자 표시 | `src/app/globals.css`, `src/app/planner.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 외부 문서 스크롤 없음·5줄/4칸/저장 버튼 표시·날짜 패널별 내부 탭·날짜 대화상자 표시 | `src/app/globals.css`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
 
 전체 자동 검사와 실제 사용자 수용·수동 보조기술 검수 결과는 구별하며 최신 실행 증거는 검증 기록에서 확정한다.
+
+
+## spec 0.9 두 날짜 화면 검수 연결 (2026-11-09)
+
+V-12·V-13·V-14의 날짜 격리를 primary·secondary 패널에 함께 적용한다. V-05·V-11은 한 날짜로 회전했을 때 pending·충돌 복구 표시를, V-10은 날짜 범위·자정·9999 상한을 검수한다. API 0.9·9개 테이블·6개 마이그레이션은 유지한다.
+
+| 검수 범위 | 구현·검증 연결 |
+|---|---|
+| 두 날짜의 할 일·일정·자유 기록 독립 저장과 다른 날짜 쓰기 잠금 | `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 포인터/폭/높이/방향별 날짜 수, PC·가로/세로 태블릿·휴대폰 캡처 | `src/app/globals.css`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| 날짜를 키로 한 캐시·회전/다른 날짜 보기/범위 이동 초안 보존 | `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+| secondary 불확실 글 저장의 자동 표시·같은 키 재생·version 유지 | `src/app/planner.tsx`, `src/app/journal-editor.tsx`, `tests/e2e/planner.spec.ts` |
+| 숨긴 날짜 포함 ID 유일성·label/설명 대상, 범위 상한에서 안전한 한 날짜 | `src/app/daily-tasks.tsx`, `src/app/journal-editor.tsx`, `src/app/schedule-editor.tsx`, `src/app/planner.tsx`, `src/app/planner-day.tsx`, `tests/e2e/planner.spec.ts`, `tests/e2e/demo.spec.ts` |
+
+브라우저 시나리오는 화면 수용 조건과 연결한 것이며 실제 실행 통과 결과는 별도 검증 기록에서 확정한다.
