@@ -1,4 +1,4 @@
-name: Development foundation
+name: Planner verification
 on:
   push:
     branches: [main, build/development-foundation]
@@ -6,12 +6,29 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: foundation-${{ github.workflow }}-${{ github.ref }}
+  group: planner-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: planner_test
+          POSTGRES_PASSWORD: planner_test_ci_only
+          POSTGRES_DB: planner_test_product
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U planner_test -d planner_test_product"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PLANNER_TEST_DATABASE_URL: postgresql://planner_test:planner_test_ci_only@127.0.0.1:5432/planner_test_product
+      PLANNER_E2E_DATABASE_URL: postgresql://planner_test:planner_test_ci_only@127.0.0.1:5432/planner_test_e2e
     steps:
       - uses: actions/checkout@v6
         with:
@@ -24,7 +41,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: npm ci
+      - run: node scripts/prepare-postgres-tests.mjs
       - run: npm run check
       - run: npm run build
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      - run: npm run test:e2e -- --workers=2 --global-timeout=300000
+      - run: npm run test:e2e:product -- --workers=2 --global-timeout=600000
+      - run: npm run test:e2e:demo -- --workers=2 --global-timeout=600000
